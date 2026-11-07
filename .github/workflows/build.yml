@@ -68,6 +68,8 @@ jobs:
           if [ -f android/DXNStockpoint/app/build/outputs/apk/release/app-release.apk ]; then
             cp android/DXNStockpoint/app/build/outputs/apk/release/app-release.apk \
                dist/dxn-stockpoint-${APP_VERSION}.apk
+            # Keep the long-standing `-release.apk` download link alive too.
+            cp dist/dxn-stockpoint-${APP_VERSION}.apk dist/dxn-stockpoint-${APP_VERSION}-release.apk
             # `latest` should always be the signed build, never the debug one.
             cp dist/dxn-stockpoint-${APP_VERSION}.apk dist/dxn-stockpoint-latest.apk
           else
