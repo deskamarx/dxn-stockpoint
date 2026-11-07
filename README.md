@@ -1,4 +1,4 @@
-# Mohammadpur Stock Point v3.1.1 🛒
+# Mohammadpur Stock Point v3.1.2 🛒
 
 An offline-first point of sale for a DXN distributor stockpoint — **one API,
 two dedicated Android apps and a web PWA that stay in sync**: an owner app for

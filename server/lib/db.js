@@ -1259,7 +1259,7 @@ export class Database {
   health() {
     return {
       status: 'ok',
-      version: '3.1.1',
+      version: '3.1.2',
       driver: 'json',
       installed: true,
       server_time: nowIso(),
@@ -1281,7 +1281,7 @@ export class Database {
   config() {
     return {
       branch: this.publicSettings(),
-      version: '3.1.1',
+      version: '3.1.2',
       features: {
         public_orders: this.setting('allow_public_orders', '1') === '1',
         sync: true,

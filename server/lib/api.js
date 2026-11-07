@@ -196,7 +196,7 @@ export function createApi({ db, options = {} }) {
       if (req.method === 'GET' && path === '/api/v1') {
         ok(res, {
           name: 'Mohammadpur Stock Point API',
-          version: '3.1.1',
+          version: '3.1.2',
           endpoints: ['/health', '/config', '/products', '/orders', '/sync', '/dashboard', '/reports/sales'],
         });
         return;
