@@ -64,11 +64,14 @@ jobs:
           mkdir -p dist
           cp android/DXNStockpoint/app/build/outputs/apk/debug/app-debug.apk \
              dist/dxn-stockpoint-${APP_VERSION}-debug.apk
-          cp dist/dxn-stockpoint-${APP_VERSION}-debug.apk dist/dxn-stockpoint-latest.apk
           # Signed release only exists once the keystore secrets are configured.
           if [ -f android/DXNStockpoint/app/build/outputs/apk/release/app-release.apk ]; then
             cp android/DXNStockpoint/app/build/outputs/apk/release/app-release.apk \
                dist/dxn-stockpoint-${APP_VERSION}.apk
+            # `latest` should always be the signed build, never the debug one.
+            cp dist/dxn-stockpoint-${APP_VERSION}.apk dist/dxn-stockpoint-latest.apk
+          else
+            cp dist/dxn-stockpoint-${APP_VERSION}-debug.apk dist/dxn-stockpoint-latest.apk
           fi
           cp android/DXNStockpoint/app/build/outputs/bundle/release/app-release.aab \
              dist/dxn-stockpoint-${APP_VERSION}.aab

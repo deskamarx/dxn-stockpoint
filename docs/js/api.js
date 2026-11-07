@@ -7,7 +7,25 @@
  */
 
 const BASE_KEY = 'dxn.apiBase.v2';
-const DEFAULT_BASE = '';
+const LIVE_BASE = 'https://dxn.10001mb.com';
+/** Dead first-generation host; any stored value is re-pointed at LIVE_BASE. */
+const DEAD_HOST = /dxn\.infy\.click/gi;
+
+/**
+ * The hosted web app defaults to the live cloud API. When it is served from
+ * localhost (npm start / the bundled Node server) the same-origin API is used
+ * instead, so local development still needs no configuration.
+ */
+function defaultBase() {
+  if (typeof location === 'undefined') return LIVE_BASE;
+  const host = location.hostname;
+  if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '[::1]' || host === '') {
+    return '';
+  }
+  return LIVE_BASE;
+}
+
+const DEFAULT_BASE = defaultBase();
 const TOKEN_KEY = 'dxn.token.v2';
 const TOKEN_META_KEY = 'dxn.tokenMeta.v2';
 
@@ -42,7 +60,14 @@ export function normalizeBase(input) {
 
 export function getBase() {
   try {
-    return localStorage.getItem(BASE_KEY) || DEFAULT_BASE;
+    let stored = localStorage.getItem(BASE_KEY) || DEFAULT_BASE;
+    // Browsers that saved the dead host get moved to the live API in place.
+    if (stored && DEAD_HOST.test(stored)) {
+      stored = stored.replace(DEAD_HOST, 'dxn.10001mb.com').replace(/^http:\/\//i, 'https://');
+      localStorage.setItem(BASE_KEY, stored);
+    }
+    DEAD_HOST.lastIndex = 0;
+    return stored;
   } catch {
     return DEFAULT_BASE;
   }

@@ -73,9 +73,9 @@ function connectionCard() {
 
       <label class="field"><span>API base URL</span>
         <input class="input" id="apiBaseInput" type="url" inputmode="url" spellcheck="false"
-          placeholder="https://your-shop.example.com"
+          placeholder="https://dxn.10001mb.com"
           value="${esc(getBase())}">
-        <small>Leave empty and run the included local server (npm start) to sync this PC only.</small>
+        <small>Defaults to the live shop API (dxn.10001mb.com). Clear it to use only the local server (npm start).</small>
       </label>
 
       <div style="display:flex;gap:10px;flex-wrap:wrap">
