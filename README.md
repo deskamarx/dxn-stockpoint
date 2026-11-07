@@ -1,14 +1,14 @@
 # Mohammadpur Stock Point v3.1.2 🛒
 
 An offline-first point of sale for a DXN distributor stockpoint — **one API,
-two dedicated Android apps and a web PWA that stay in sync**: an owner app for
-the counter and a customer app for browsing, ordering and tracking. Sell with
-no internet, sync the moment you have it.
+three dedicated Android apps and a web PWA that stay in sync**: an owner app for
+the counter, a customer app for browsing and tracking, and the suite app for the
+four-workspace control room. Sell with no internet, sync the moment you have it.
 
 | | |
 |---|---|
 | 🌐 Web app | served by the same deployment at `https://<your-domain>/` |
-| 📱 Android | `dxn-owner-*.apk` and `dxn-client-*.apk` in GitHub Releases |
+| 📱 Android | `dxn-owner-*.apk`, `dxn-client-*.apk` and `dxn-suite-*.apk` in GitHub Releases |
 | 🖥️ Repo | https://github.com/deskamarx/dxn-stockpoint |
 | 🔒 Privacy | docs/privacy.html on any deployment |
 
@@ -78,6 +78,7 @@ for machine-to-machine auth via `X-Api-Key` — defaults to
 | `android/DXNStockpoint/core` | Shared Android library: API client, models, repository, cache, reusable UI |
 | `android/DXNStockpoint/owner-app` | Owner app (`com.dxn.stockpoint`) — POS, stock, orders, admin |
 | `android/DXNStockpoint/client-app` | Customer app (`com.dxn.stockpoint.client`) — shop, cart, account, tracking |
+| `android/DXNStockpoint/suite-app` | Suite app (`com.dxn.stockpoint.suite`) — wraps the hosted suite with reload and address controls |
 | `deploy/` | Always-free Oracle Cloud + Docker + Caddy production stack |
 | `tests/` | `api.test.mjs` — the contract the web and Android clients depend on |
 | `scripts/` | Static checks, Android contract verifiers, legacy helpers |
@@ -150,19 +151,24 @@ API is unreachable.
 
 ## Android apps
 
-Both apps live in one Gradle project and share `:core`.
+All apps live in one Gradle project and share `:core`. The suite app is a
+WebView shell around the hosted suite, so web updates reach it without a store
+release; it also remembers a custom suite address for self-hosted servers.
 
 | App | Package | Use it for |
 |---|---|---|
 | Owner | `com.dxn.stockpoint` | Counter sales, stock takes, order status, customer desk, admin panel |
 | Customer | `com.dxn.stockpoint.client` | Catalogue, cart, DXN member pricing, account, order history, tracking |
+| Suite | `com.dxn.stockpoint.suite` | Stockpoint POS, Flow orders, Intelligence dashboard, PV Planner |
 
 ```bash
 cd android/DXNStockpoint
-./scripts/new-client-keystore.sh            # once: creates the customer signing key
+./scripts/new-client-keystore.sh           # once: creates the customer signing key
+./scripts/new-suite-keystore.sh            # once: creates the suite signing key
 ./scripts/build-apps.sh --release --api-url https://shop.example.com/
 ./scripts/build-apps.sh --release --api-url https://shop.example.com/ --aab
 ./scripts/build-apps.sh --debug --client-only
+./scripts/build-apps.sh --release --suite-only
 ./scripts/bump-version.sh 3.2.0             # versionCode + versionName
 ```
 

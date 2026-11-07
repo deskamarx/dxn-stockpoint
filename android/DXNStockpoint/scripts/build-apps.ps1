@@ -1,15 +1,17 @@
 <#
 .SYNOPSIS
-Builds the owner and customer Android apps.
+Builds the owner, customer and suite Android apps.
 
 .EXAMPLE
 .\scripts\build-apps.ps1
 .\scripts\build-apps.ps1 -Variant release -Aab
 .\scripts\build-apps.ps1 -Variant debug -ClientOnly
+.\scripts\build-apps.ps1 -Variant release -SuiteOnly
 .\scripts\build-apps.ps1 -Variant release -ApiUrl https://api.example.com/ -VersionCode 11 -VersionName 3.2.0
 
 Signing credentials are read from the environment, or from
-.tooling\keystore.env / .tooling\client-keystore.env when present.
+.tooling\keystore.env / .tooling\client-keystore.env / .tooling\suite-keystore.env
+when present.
 #>
 param(
     [ValidateSet("debug", "release", "both")]
@@ -18,6 +20,8 @@ param(
     [switch]$Clean,
     [switch]$OwnerOnly,
     [switch]$ClientOnly,
+    [switch]$SuiteOnly,
+    [switch]$NoSuite,
     [switch]$AllowPlaceholder,
     [string]$ApiUrl,
     [string]$VersionCode,
@@ -41,8 +45,10 @@ function Import-DotEnv([string]$Path) {
 
 Import-DotEnv (Join-Path $Root "..\..\.tooling\keystore.env")
 Import-DotEnv (Join-Path $Root ".tooling\keystore.env")
-Import-DotEnv (Join-Path $Root ".tooling\client-keystore.env")
 Import-DotEnv (Join-Path $Root "..\..\.tooling\client-keystore.env")
+Import-DotEnv (Join-Path $Root ".tooling\client-keystore.env")
+Import-DotEnv (Join-Path $Root "..\..\.tooling\suite-keystore.env")
+Import-DotEnv (Join-Path $Root ".tooling\suite-keystore.env")
 
 if ($env:DXN_KEYSTORE -and $env:DXN_KEYSTORE_PASSWORD -and (Test-Path $env:DXN_KEYSTORE)) {
     $alias = if ($env:DXN_KEY_ALIAS) { $env:DXN_KEY_ALIAS } else { "dxn" }
@@ -62,15 +68,17 @@ $defaultName = ($gradleProps | Where-Object { $_ -match '^dxn\.versionName=' } |
 if (-not $VersionCode) { $VersionCode = $defaultCode.Trim() }
 if (-not $VersionName) { $VersionName = $defaultName.Trim() }
 
-$owner = -not $ClientOnly
-$client = -not $OwnerOnly
+$owner = -not $ClientOnly -and -not $SuiteOnly
+$client = -not $OwnerOnly -and -not $SuiteOnly
+$suite = -not $NoSuite -and -not $OwnerOnly -and -not $ClientOnly
+if ($SuiteOnly) { $suite = $true }
 
 if (-not $ApiUrl) { $ApiUrl = $env:DXN_API_URL }
 if (-not $ApiUrl) {
     $ApiUrl = ($gradleProps | Where-Object { $_ -match '^dxn\.apiBaseUrl=' } | Select-Object -First 1) -replace '^dxn\.apiBaseUrl=', ''
 }
 $ApiUrl = $ApiUrl.Trim()
-if ($Variant -ne "debug" -and (-not $ApiUrl -or $ApiUrl -match 'shop\.example\.com')) {
+if ($Variant -ne "debug" -and ($owner -or $client) -and (-not $ApiUrl -or $ApiUrl -match 'shop\.example\.com')) {
     if (-not $AllowPlaceholder) {
         throw "Set the production API with -ApiUrl https://your-domain/ (or DXN_API_URL). Refusing to build a release against the placeholder domain."
     }
@@ -87,13 +95,16 @@ if ($VersionName) { $gradleArgs.Add("-Pdxn.versionName=$VersionName") }
 if ($Variant -in @("debug", "both")) {
     if ($owner) { $tasks.Add(":owner-app:assembleDebug") }
     if ($client) { $tasks.Add(":client-app:assembleDebug") }
+    if ($suite) { $tasks.Add(":suite-app:assembleDebug") }
 }
 if ($Variant -in @("release", "both")) {
     if ($owner) { $tasks.Add(":owner-app:assembleRelease") }
     if ($client) { $tasks.Add(":client-app:assembleRelease") }
+    if ($suite) { $tasks.Add(":suite-app:assembleRelease") }
     if ($Aab) {
         if ($owner) { $tasks.Add(":owner-app:bundleRelease") }
         if ($client) { $tasks.Add(":client-app:bundleRelease") }
+        if ($suite) { $tasks.Add(":suite-app:bundleRelease") }
     }
 }
 
@@ -144,6 +155,7 @@ function Copy-App([string]$App, [string]$Label) {
 
 if ($owner) { Copy-App "owner-app" "owner" }
 if ($client) { Copy-App "client-app" "client" }
+if ($suite) { Copy-App "suite-app" "suite" }
 
 Write-Host ""
 Write-Host "==> Artifacts in $dist"

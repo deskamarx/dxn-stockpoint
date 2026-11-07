@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.DxnSuite" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#07120C</item>
+        <item name="android:statusBarColor">#062516</item>
+        <item name="android:navigationBarColor">#062516</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorAccent">#E7C56B</item>
+    </style>
+</resources>

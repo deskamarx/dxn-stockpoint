@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
-# Build the owner and/or customer Android app.
+# Build the owner, customer and suite Android apps.
 #
-#   ./scripts/build-apps.sh                         # debug + release, both apps
+#   ./scripts/build-apps.sh                         # debug + release, all apps
 #   ./scripts/build-apps.sh --release --aab         # release APK + Play bundle
 #   ./scripts/build-apps.sh --debug --client-only
+#   ./scripts/build-apps.sh --release --suite-only
 #   ./scripts/build-apps.sh --release \
 #       --api-url https://api.example.com/ \
 #       --version-code 11 --version-name 3.2.0
@@ -13,7 +14,8 @@
 # script sources (in order):
 #   .tooling/keystore.env          -> owner key
 #   .tooling/client-keystore.env   -> customer key
-# Both files are gitignored.
+#   .tooling/suite-keystore.env    -> suite key
+# All files are gitignored.
 #
 set -euo pipefail
 
@@ -26,6 +28,7 @@ AAB=0
 CLEAN=0
 OWNER=1
 CLIENT=1
+SUITE=1
 ALLOW_PLACEHOLDER=0
 API_URL="${DXN_API_URL:-}"
 VERSION_CODE=""
@@ -43,8 +46,10 @@ while [[ $# -gt 0 ]]; do
     --both) VARIANT="both" ;;
     --aab) AAB=1 ;;
     --clean) CLEAN=1 ;;
-    --owner-only) OWNER=1; CLIENT=0 ;;
-    --client-only) OWNER=0; CLIENT=1 ;;
+    --owner-only) OWNER=1; CLIENT=0; SUITE=0 ;;
+    --client-only) OWNER=0; CLIENT=1; SUITE=0 ;;
+    --suite-only) OWNER=0; CLIENT=0; SUITE=1 ;;
+    --no-suite) SUITE=0 ;;
     --api-url) API_URL="${2:?--api-url needs a value}"; shift ;;
     --allow-placeholder) ALLOW_PLACEHOLDER=1 ;;
     --version-code) VERSION_CODE="${2:?--version-code needs a value}"; shift ;;
@@ -80,6 +85,9 @@ done
 for env_file in "$ROOT/../../.tooling/client-keystore.env" "$ROOT/.tooling/client-keystore.env"; do
   load_env "$env_file"
 done
+for env_file in "$ROOT/../../.tooling/suite-keystore.env" "$ROOT/.tooling/suite-keystore.env"; do
+  load_env "$env_file"
+done
 
 # Fail loudly instead of silently shipping an unsigned APK. If the configured
 # keystore rejects the stored password, fall back to the original key backup.
@@ -100,7 +108,7 @@ fi
 if [[ -z "$API_URL" ]]; then
   API_URL="$(grep '^dxn.apiBaseUrl=' "$ROOT/gradle.properties" | cut -d= -f2-)"
 fi
-if [[ "$VARIANT" != "debug" && ( -z "$API_URL" || "$API_URL" == *"shop.example.com"* ) ]]; then
+if [[ "$VARIANT" != "debug" && ( $OWNER -eq 1 || $CLIENT -eq 1 ) && ( -z "$API_URL" || "$API_URL" == *"shop.example.com"* ) ]]; then
   if [[ $ALLOW_PLACEHOLDER -ne 1 ]]; then
     echo "ERROR: set the production API with --api-url https://your-domain/ (or DXN_API_URL)." >&2
     echo "       Refusing to build a release that points at the placeholder domain." >&2
@@ -120,13 +128,16 @@ TASKS=()
 if [[ "$VARIANT" == "debug" || "$VARIANT" == "both" ]]; then
   [[ $OWNER -eq 1 ]] && TASKS+=(":owner-app:assembleDebug")
   [[ $CLIENT -eq 1 ]] && TASKS+=(":client-app:assembleDebug")
+  [[ $SUITE -eq 1 ]] && TASKS+=(":suite-app:assembleDebug")
 fi
 if [[ "$VARIANT" == "release" || "$VARIANT" == "both" ]]; then
   [[ $OWNER -eq 1 ]] && TASKS+=(":owner-app:assembleRelease")
   [[ $CLIENT -eq 1 ]] && TASKS+=(":client-app:assembleRelease")
+  [[ $SUITE -eq 1 ]] && TASKS+=(":suite-app:assembleRelease")
   if [[ $AAB -eq 1 ]]; then
     [[ $OWNER -eq 1 ]] && TASKS+=(":owner-app:bundleRelease")
     [[ $CLIENT -eq 1 ]] && TASKS+=(":client-app:bundleRelease")
+    [[ $SUITE -eq 1 ]] && TASKS+=(":suite-app:bundleRelease")
   fi
 fi
 
@@ -184,6 +195,7 @@ copy_artifacts() {
 
 [[ $OWNER -eq 1 ]] && copy_artifacts "owner-app" "owner"
 [[ $CLIENT -eq 1 ]] && copy_artifacts "client-app" "client"
+[[ $SUITE -eq 1 ]] && copy_artifacts "suite-app" "suite"
 
 echo
 echo "==> Artifacts in $DIST"
