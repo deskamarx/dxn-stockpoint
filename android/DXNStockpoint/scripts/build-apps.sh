@@ -148,7 +148,12 @@ if [[ $AAB -eq 1 || "$VARIANT" != "debug" ]]; then
   export GRADLE_OPTS="${GRADLE_OPTS:+$GRADLE_OPTS }-Djava.io.tmpdir=$JAVA_TMP"
 fi
 
-./gradlew "${TASKS[@]}" "${GRADLE_ARGS[@]}"
+if [[ -x ./gradlew ]]; then
+  ./gradlew "${TASKS[@]}" "${GRADLE_ARGS[@]}"
+else
+  # Some checkouts (or Windows-created archives) lose the executable bit.
+  bash ./gradlew "${TASKS[@]}" "${GRADLE_ARGS[@]}"
+fi
 
 VERSION_NAME="${VERSION_NAME:-$(grep '^dxn.versionName=' "$ROOT/gradle.properties" | cut -d= -f2)}"
 VERSION_CODE="${VERSION_CODE:-$(grep '^dxn.versionCode=' "$ROOT/gradle.properties" | cut -d= -f2)}"
