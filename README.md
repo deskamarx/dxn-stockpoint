@@ -133,16 +133,20 @@ npm test
 ## Master suite
 
 Open `docs/suite.html` (or the deployed `…/suite.html`) for the unified
-**DXN Suite** shell — one rail combining:
+**DXN Suite** shell — one rail combining four workspaces:
 
-- **Stockpoint** — the live POS, embedded and synced to the shop server (real
-  app, not a demo)
-- **Flow** — orders, courier partners, dispatch, live tracking, fulfillment
-- **Intelligence** — control tower, NDR/COD, automation, analytics, SLA, team
-- **PV Planner** — month-end target optimizer reading live stock
+- **Stockpoint** — the live POS from the real app, synced to the shop server
+- **Flow** — the real Orders screen: status changes, SteadFast shipments,
+  receipts and live tracking
+- **Intelligence** — the real Dashboard and Reports: sales, stock watch,
+  bestsellers, payment mix and customer analytics
+- **PV Planner** — month-end target optimizer reading products, prices, PV and
+  stock live from the API; its plans are handed to the real POS cart
 
-The Stockpoint workspace loads the real app (`./index.html`) so sales, stock
-and orders stay live-synced with the backend.
+Flow and Intelligence embed the same live app (`./index.html#/orders`,
+`#/dashboard`) rather than mock screens, so every workspace reads the same
+revision feed. The PV Planner falls back to a bundled catalogue only when the
+API is unreachable.
 
 ## Android apps
 

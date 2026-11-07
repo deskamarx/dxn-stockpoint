@@ -600,6 +600,29 @@ function wireChrome() {
     closeMore();
   });
 
+  // The Suite's PV Planner hands a finished basket to the POS this way. Same
+  // origin only, and lines go through the normal cart rules (stock included).
+  window.addEventListener('message', (event) => {
+    if (event.origin !== location.origin) return;
+    const data = event.data;
+    if (!data || data.type !== 'dxn:add-to-cart' || !Array.isArray(data.lines)) return;
+    store.clearCart();
+    store.setTier(data.tier);
+    let added = 0;
+    data.lines.forEach((line) => {
+      const productId = Number(line.productId);
+      const qty = Math.round(Number(line.qty));
+      if (!productId || !Number.isFinite(qty) || qty <= 0) return;
+      if (store.addToCart(productId, qty).ok) added += 1;
+    });
+    if (added) {
+      toast(`PV plan added: ${added} line${added === 1 ? '' : 's'} in the cart.`, 'ok');
+      if (currentRoute() !== 'pos') location.hash = '#/pos';
+    } else {
+      toast('Catalogue is still loading — try again in a moment.', 'error');
+    }
+  });
+
   window.addEventListener('beforeinstallprompt', (event) => {
     event.preventDefault();
     window.__dxnInstallPrompt = event;
