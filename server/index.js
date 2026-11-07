@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Database } from './lib/db.js';
 import { createApi } from './lib/api.js';
+import { clientIp, RateLimiter } from './lib/security.js';
 import { mimeFor } from './lib/util.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -45,6 +46,16 @@ const OPEN = hasFlag('--open');
 const DEMO = hasFlag('--demo');
 const RESET = hasFlag('--reset');
 
+const CORS_ORIGINS = String(process.env.DXN_CORS_ORIGINS || '')
+  .split(',')
+  .map((item) => item.trim())
+  .filter(Boolean);
+const TRUST_PROXY = process.env.DXN_TRUST_PROXY
+  ? process.env.DXN_TRUST_PROXY === '1'
+  : PRODUCTION;
+const RATE_LIMIT = Math.max(30, Number(process.env.DXN_RATE_LIMIT) || 300);
+const LOG_JSON = process.env.DXN_LOG_FORMAT === 'json' || (PRODUCTION && process.env.DXN_LOG_FORMAT !== 'text');
+
 if (RESET) {
   fs.rmSync(path.join(DATA, 'db.json'), { force: true });
 }
@@ -65,6 +76,15 @@ if (PRODUCTION) {
     console.error('Refusing to start in production mode with the default admin key. Set DXN_ADMIN_KEY.');
     process.exit(1);
   }
+  if (ADMIN_KEY.length < 24) {
+    console.warn('WARNING: DXN_ADMIN_KEY is shorter than 24 characters. Use a long random value.');
+  }
+  if (!TRUST_PROXY) {
+    console.warn('WARNING: DXN_TRUST_PROXY is off. Per-IP rate limits will see the reverse proxy address.');
+  }
+  if (CORS_ORIGINS.includes('*')) {
+    console.warn('WARNING: DXN_CORS_ORIGINS=* allows every website to call the API. Prefer an explicit list.');
+  }
 }
 
 if (DEMO && db.data.orders.length === 0) {
@@ -72,7 +92,15 @@ if (DEMO && db.data.orders.length === 0) {
   console.log(`Seeded ${result.created} demo sales.`);
 }
 
-const handleApi = createApi({ db });
+const rateLimiter = new RateLimiter({ limit: RATE_LIMIT, windowMs: 60 * 1000 });
+const handleApi = createApi({
+  db,
+  options: {
+    allowedOrigins: CORS_ORIGINS,
+    rateLimiter,
+    trustProxy: TRUST_PROXY,
+  },
+});
 
 function sendText(res, status, text, type = 'text/plain; charset=utf-8') {
   res.writeHead(status, {
@@ -156,7 +184,12 @@ function serveStatic(req, res, pathname) {
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'strict-origin-when-cross-origin',
     'X-Frame-Options': 'SAMEORIGIN',
+    'Cross-Origin-Resource-Policy': 'same-origin',
   };
+
+  if (String(req.headers['x-forwarded-proto'] || '').toLowerCase() === 'https' || req.socket.encrypted) {
+    headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains';
+  }
 
   if (ext === '.html') {
     headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
@@ -175,9 +208,23 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
 
   res.on('finish', () => {
-    if (url.pathname.startsWith('/api/')) {
-      const ms = Date.now() - started;
-      console.log(`${req.method} ${url.pathname} ${res.statusCode} ${ms}ms`);
+    if (!url.pathname.startsWith('/api/')) return;
+    const ms = Date.now() - started;
+    const requestId = res.getHeader('X-Request-Id') || '-';
+    const ip = clientIp(req, TRUST_PROXY);
+    if (LOG_JSON) {
+      console.log(JSON.stringify({
+        ts: new Date().toISOString(),
+        level: res.statusCode >= 500 ? 'error' : 'info',
+        method: req.method,
+        path: url.pathname,
+        status: res.statusCode,
+        ms,
+        ip,
+        request_id: requestId,
+      }));
+    } else {
+      console.log(`${req.method} ${url.pathname} ${res.statusCode} ${ms}ms ${requestId}`);
     }
   });
 
@@ -212,6 +259,9 @@ function openBrowser(target) {
   }
 }
 
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
+
 server.listen(PORT, HOST, () => {
   const displayHost = HOST === '0.0.0.0' ? 'localhost' : HOST;
   const url = `http://${displayHost}:${PORT}`;
@@ -224,9 +274,13 @@ server.listen(PORT, HOST, () => {
   console.log(`  Shop app     ${url}`);
   console.log(`  API health   ${url}/api/v1/health`);
   console.log(`  Mode         ${PRODUCTION ? 'production (secure)' : 'development'}`);
-  console.log(`  Admin PIN    ${PIN}`);
+  if (!PRODUCTION) {
+    console.log(`  Admin PIN    ${PIN}`);
+  }
   console.log(`  Data file    ${path.join(DATA, 'db.json')}`);
   console.log(`  Catalogue    ${products} products · ${orders} orders`);
+  console.log(`  Rate limit   ${RATE_LIMIT} requests/min/IP`);
+  console.log(`  CORS         ${CORS_ORIGINS.length ? CORS_ORIGINS.join(', ') : 'same-origin only'}`);
   console.log('  -----------------------------------------------');
   console.log('  Press Ctrl+C to stop.');
   console.log('');
@@ -234,12 +288,25 @@ server.listen(PORT, HOST, () => {
   if (OPEN) openBrowser(url);
 });
 
-process.on('SIGINT', () => {
-  console.log('\nStopping Stockpoint…');
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 1500).unref();
-});
+let stopping = false;
+function shutdown(signal) {
+  if (stopping) return;
+  stopping = true;
+  console.log(`\nStopping Stockpoint (${signal})…`);
+  const force = setTimeout(() => process.exit(1), 10000);
+  force.unref();
+  server.close(() => {
+    try {
+      db.save();
+    } catch (error) {
+      console.error('Could not flush the database on shutdown:', error);
+    }
+    process.exit(0);
+  });
+}
 
-process.on('SIGTERM', () => {
-  server.close(() => process.exit(0));
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled rejection:', error);
 });

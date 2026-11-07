@@ -3,7 +3,9 @@
  * speaks the Stockpoint v1 contract.
  */
 
-import { ApiError, clean, int, money, nowIso } from './util.js';
+import { ApiError, clean, int, money, nowIso, safeEqual } from './util.js';
+import { createCourier } from './courier.js';
+import { clientIp, corsHeaders, requestId as newRequestId, securityHeaders } from './security.js';
 
 const MAX_BODY = 2 * 1024 * 1024;
 
@@ -36,28 +38,37 @@ function fail(res, error) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let settled = false;
     const chunks = [];
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
     req.on('data', (chunk) => {
+      if (settled) return;
       size += chunk.length;
       if (size > MAX_BODY) {
-        reject(new ApiError('Request body is too large', 413, 'payload_too_large'));
-        req.destroy();
+        chunks.length = 0;
+        finish(reject, new ApiError('Request body is too large', 413, 'payload_too_large'));
+        req.resume();
         return;
       }
       chunks.push(chunk);
     });
     req.on('end', () => {
+      if (settled) return;
       if (!chunks.length) {
-        resolve({});
+        finish(resolve, {});
         return;
       }
       try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        finish(resolve, JSON.parse(Buffer.concat(chunks).toString('utf8')));
       } catch {
-        reject(new ApiError('Request body must be valid JSON', 400, 'invalid_json'));
+        finish(reject, new ApiError('Request body must be valid JSON', 400, 'invalid_json'));
       }
     });
-    req.on('error', reject);
+    req.on('error', (error) => finish(reject, error));
   });
 }
 
@@ -114,7 +125,11 @@ function receiptText(db, order) {
   return lines.join('\n');
 }
 
-export function createApi({ db }) {
+export function createApi({ db, options = {} }) {
+  const allowedOrigins = options.allowedOrigins || [];
+  const limiter = options.rateLimiter || null;
+  const trustProxy = options.trustProxy === true;
+  const courier = createCourier(db);
   const loginAttempts = new Map();
   const LOGIN_LIMIT = 10;
   const LOGIN_WINDOW_MS = 15 * 60 * 1000;
@@ -134,10 +149,10 @@ export function createApi({ db }) {
   }
 
   return async function handleApi(req, res, url) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Api-Key');
-    res.setHeader('Access-Control-Max-Age', '86400');
+    res.setHeader('X-Request-Id', newRequestId(req));
+    const cors = corsHeaders(req, allowedOrigins);
+    for (const [name, value] of Object.entries(cors)) res.setHeader(name, value);
+    for (const [name, value] of Object.entries(securityHeaders(req))) res.setHeader(name, value);
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -146,10 +161,29 @@ export function createApi({ db }) {
     }
 
     const path = url.pathname.replace(/\/+$/, '') || '/api/v1';
-    const auth = requestAuth(req, url, db);
-    const body = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readBody(req) : {};
 
     try {
+      const origin = req.headers.origin;
+      if (origin && !cors['Access-Control-Allow-Origin'] && req.method !== 'GET' && req.method !== 'HEAD') {
+        throw new ApiError('This origin is not allowed to call the shop API', 403, 'origin_not_allowed');
+      }
+
+      const ip = clientIp(req, trustProxy);
+      if (limiter && path !== '/api/v1/courier/webhook') {
+        const rate = limiter.consume(ip);
+        if (!rate.ok) {
+          res.setHeader('Retry-After', String(rate.retryAfter));
+          throw new ApiError(
+            `Too many requests. Try again in ${rate.retryAfter} seconds.`,
+            429,
+            'rate_limited',
+          );
+        }
+      }
+
+      const auth = requestAuth(req, url, db);
+      const body = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readBody(req) : {};
+
       // ── Service ───────────────────────────────────────────────────────────
       if (req.method === 'GET' && path === '/api/v1/health') {
         ok(res, db.health());
@@ -162,7 +196,7 @@ export function createApi({ db }) {
       if (req.method === 'GET' && path === '/api/v1') {
         ok(res, {
           name: 'Mohammadpur Stock Point API',
-          version: '3.0.0',
+          version: '3.1.1',
           endpoints: ['/health', '/config', '/products', '/orders', '/sync', '/dashboard', '/reports/sales'],
         });
         return;
@@ -170,7 +204,6 @@ export function createApi({ db }) {
 
       // ── Auth ──────────────────────────────────────────────────────────────
       if (req.method === 'POST' && path === '/api/v1/auth/login') {
-        const ip = req.socket?.remoteAddress || 'unknown';
         const rate = loginRate(ip);
         if (!rate.ok) {
           res.setHeader('Retry-After', String(rate.retryAfter));
@@ -459,34 +492,167 @@ export function createApi({ db }) {
       if (path === '/api/v1/courier/settings') {
         requireAdmin(auth);
         if (req.method === 'GET') {
-          ok(res, { settings: db.courierSettings() });
+          ok(res, { settings: courier.settings() });
           return;
         }
         if (req.method === 'PUT' || req.method === 'PATCH') {
-          ok(res, { message: 'Courier settings saved', settings: db.saveCourierSettings(body) });
+          courier.saveSettings(body);
+          ok(res, { message: 'SteadFast settings saved', configured: courier.settings().configured });
           return;
         }
       }
       if (req.method === 'GET' && path === '/api/v1/courier/balance') {
         requireAdmin(auth);
-        if (!db.setting('steadfast_api_key', '')) {
-          throw new ApiError('Add your SteadFast API key first', 422, 'courier_not_configured');
-        }
-        ok(res, { balance: { current_balance: 0 }, note: 'Live SteadFast calls run on the PHP API deployment.' });
+        ok(res, { balance: await courier.balance() });
         return;
-      }
-      if (path.startsWith('/api/v1/courier/') && req.method === 'POST') {
-        requireAdmin(auth);
-        throw new ApiError(
-          'SteadFast shipment actions are available when the app is connected to the PHP API. The local server keeps your catalogue and orders safe offline.',
-          501,
-          'courier_unavailable',
-        );
       }
       if (req.method === 'GET' && path === '/api/v1/courier/returns') {
         requireAdmin(auth);
-        ok(res, { returns: [] });
+        ok(res, { returns: await courier.returns() });
         return;
+      }
+      if (req.method === 'POST' && path === '/api/v1/courier/webhook') {
+        const supplied = bearer(req) || clean(url.searchParams.get('token'), 200);
+        const expected = courier.webhookToken();
+        if (expected !== '' && !safeEqual(expected, supplied)) {
+          throw new ApiError('Unauthorized', 401, 'unauthorized');
+        }
+        const consignmentId = int(body.consignment_id);
+        const invoice = clean(body.invoice, 80);
+        const row = (consignmentId > 0
+          ? db.data.orders.find((order) => int(order.courier_consignment_id) === consignmentId)
+          : null)
+          || (invoice
+            ? db.data.orders.find((order) => order.order_number === invoice.replace(/^DXN-/, ''))
+            : null);
+
+        if (row && String(body.notification_type || '') === 'delivery_status') {
+          const sfStatus = String(body.status || '').toLowerCase();
+          if (sfStatus) row.courier_status = sfStatus;
+          row.updated_at = nowIso();
+          row.rev = db.nextRev();
+          db.save();
+          db.audit('courier_webhook', 'order', String(row.id), sfStatus);
+          const mapped = courier.mapOrderStatus(sfStatus);
+          if (mapped && mapped !== row.status) {
+            try {
+              db.updateOrderStatus(row.id, mapped);
+            } catch (error) {
+              db.audit('courier_webhook_skipped', 'order', String(row.id), error.message);
+            }
+          }
+        }
+        ok(res, { status: 'success', message: 'Webhook received successfully.' });
+        return;
+      }
+
+      const shipMatch = path.match(/^\/api\/v1\/courier\/ship\/(\d+)$/);
+      if (shipMatch && req.method === 'POST') {
+        requireAdmin(auth);
+        const id = int(shipMatch[1]);
+        const order = db.order(id);
+        const row = db.orderRow(id);
+        if (!order || !row) throw new ApiError('Order not found', 404, 'not_found');
+        if (row.courier_consignment_id) {
+          throw new ApiError(
+            `This order already has a consignment (${row.courier_tracking_code || row.courier_consignment_id})`,
+            409,
+            'already_shipped',
+          );
+        }
+        const phone = clean(order.customer_phone, 40);
+        const address = clean(body.recipient_address, 250);
+        if (!phone) throw new ApiError('Customer phone is required to ship', 422, 'validation_error');
+        if (!address) throw new ApiError('Recipient address is required', 422, 'validation_error');
+
+        const codAmount = body.cod_amount !== undefined && Number.isFinite(Number(body.cod_amount))
+          ? money(body.cod_amount)
+          : money(order.total_amount);
+        const payload = {
+          invoice: `DXN-${order.order_number}`,
+          recipient_name: clean(order.customer_name, 100) || 'Customer',
+          recipient_phone: phone,
+          recipient_address: address,
+          cod_amount: codAmount,
+        };
+        const note = clean(body.note ?? order.note, 500);
+        if (note) payload.note = note;
+        const description = clean(body.item_description, 250);
+        if (description) payload.item_description = description;
+        if (body.delivery_type !== undefined) payload.delivery_type = int(body.delivery_type);
+
+        const result = await courier.createOrder(payload);
+        const consignment = result.consignment || result;
+        if (!consignment?.consignment_id) {
+          throw new ApiError('SteadFast did not return a consignment', 502, 'courier_error');
+        }
+
+        row.courier_provider = 'steadfast';
+        row.courier_consignment_id = int(consignment.consignment_id);
+        row.courier_tracking_code = clean(consignment.tracking_code, 80) || null;
+        row.courier_status = clean(consignment.status, 40) || 'in_review';
+        row.courier_cod_amount = codAmount;
+        row.courier_created_at = nowIso();
+        row.updated_at = nowIso();
+        row.rev = db.nextRev();
+        db.save();
+        db.audit('courier_shipment_created', 'order', String(id), `consignment ${row.courier_consignment_id}`);
+
+        ok(res, {
+          message: 'Shipment created with SteadFast',
+          order: db.order(id),
+          consignment,
+        });
+        return;
+      }
+
+      const courierStatusMatch = path.match(/^\/api\/v1\/courier\/status\/(\d+)$/);
+      if (courierStatusMatch && req.method === 'GET') {
+        requireAdmin(auth);
+        const id = int(courierStatusMatch[1]);
+        const row = db.orderRow(id);
+        if (!row) throw new ApiError('Order not found', 404, 'not_found');
+        if (!row.courier_consignment_id) throw new ApiError('No consignment for this order', 404, 'no_consignment');
+
+        const result = await courier.statusByCid(row.courier_consignment_id);
+        const sfStatus = clean(result.delivery_status ?? result.status, 40) || row.courier_status || '';
+        row.courier_status = sfStatus;
+        row.updated_at = nowIso();
+        row.rev = db.nextRev();
+        db.save();
+
+        const mapped = courier.mapOrderStatus(sfStatus);
+        if (mapped && mapped !== row.status) {
+          try {
+            db.updateOrderStatus(id, mapped);
+            db.audit('courier_status_synced', 'order', String(id), `${row.status} -> ${mapped}`);
+          } catch (error) {
+            db.audit('courier_status_skipped', 'order', String(id), error.message);
+          }
+        }
+        ok(res, { order: db.order(id), courier_status: sfStatus, mapped_status: mapped });
+        return;
+      }
+
+      const courierReturnMatch = path.match(/^\/api\/v1\/courier\/return\/(\d+)$/);
+      if (courierReturnMatch && req.method === 'POST') {
+        requireAdmin(auth);
+        const id = int(courierReturnMatch[1]);
+        const order = db.order(id);
+        if (!order) throw new ApiError('Order not found', 404, 'not_found');
+        if (!order.courier_consignment_id) throw new ApiError('No consignment for this order', 404, 'no_consignment');
+
+        const payload = { consignment_id: int(order.courier_consignment_id) };
+        const reason = clean(body.reason, 250);
+        if (reason) payload.reason = reason;
+        const result = await courier.createReturn(payload);
+        db.audit('courier_return_requested', 'order', String(id), reason);
+        ok(res, { message: 'Return request created', result });
+        return;
+      }
+
+      if (path.startsWith('/api/v1/courier/') && req.method === 'POST') {
+        throw new ApiError(`No route for ${req.method} ${path}`, 404, 'not_found');
       }
 
       // ── Local demo helpers ────────────────────────────────────────────────

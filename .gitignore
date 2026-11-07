@@ -11,6 +11,8 @@ captures/
 .externalNativeBuild/
 .cxx/
 *.keystore
+*.keystore.*
+*.jks
 !debug.keystore
 *.swp
 *.swo
@@ -72,3 +74,7 @@ api/**/.ftp-state*.json
 
 # PHP dev server router used locally only
 api/public/router.php
+
+# Android module build outputs
+android/DXNStockpoint/*/build/
+android/DXNStockpoint/.tooling/

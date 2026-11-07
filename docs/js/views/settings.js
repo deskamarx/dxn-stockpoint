@@ -73,9 +73,9 @@ function connectionCard() {
 
       <label class="field"><span>API base URL</span>
         <input class="input" id="apiBaseInput" type="url" inputmode="url" spellcheck="false"
-          placeholder="https://dxn.10001mb.com"
+          placeholder="${esc(getBase() || 'https://shop.example.com')}"
           value="${esc(getBase())}">
-        <small>Defaults to the live shop API (dxn.10001mb.com). Clear it to use only the local server (npm start).</small>
+        <small>Defaults to this site's own address. Change it only when the API lives on a different domain.</small>
       </label>
 
       <div style="display:flex;gap:10px;flex-wrap:wrap">

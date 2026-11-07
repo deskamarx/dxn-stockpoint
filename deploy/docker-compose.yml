@@ -1,0 +1,75 @@
+# Always-free production stack for the Oracle Cloud Always Free VM (or any
+# small Ubuntu/Debian VPS):
+#
+#   docker compose --env-file .env up -d --build
+#
+# Caddy terminates TLS with an automatic Let's Encrypt certificate and proxies
+# every request to the Node server, which also serves the web app.
+
+name: dxn-stockpoint
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: dxn-stockpoint:${DXN_TAG:-latest}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "4173"
+      DXN_TRUST_PROXY: "1"
+    volumes:
+      - dxn-data:/app/server/data
+    expose:
+      - "4173"
+    networks:
+      - web
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      DXN_DOMAIN: ${DXN_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - web
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  web:
+
+volumes:
+  dxn-data:
+  caddy-data:
+  caddy-config:

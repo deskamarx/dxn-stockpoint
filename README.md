@@ -1,31 +1,31 @@
-# Mohammadpur Stock Point v3.0.0 🛒
+# Mohammadpur Stock Point v3.1.1 🛒
 
 An offline-first point of sale for a DXN distributor stockpoint — **one API,
-three run paths, two clients that stay in sync**: a web PWA and a native
-Android app. Sell with no internet, sync the moment you have it.
+two dedicated Android apps and a web PWA that stay in sync**: an owner app for
+the counter and a customer app for browsing, ordering and tracking. Sell with
+no internet, sync the moment you have it.
 
 | | |
 |---|---|
-| 🌐 Web app (live) | https://deskamarx.github.io/dxn-stockpoint/ |
-| 📱 Android APK | https://github.com/deskamarx/dxn-stockpoint/releases/tag/v3.0.0 |
+| 🌐 Web app | served by the same deployment at `https://<your-domain>/` |
+| 📱 Android | `dxn-owner-*.apk` and `dxn-client-*.apk` in GitHub Releases |
 | 🖥️ Repo | https://github.com/deskamarx/dxn-stockpoint |
 | 🔒 Privacy | docs/privacy.html on any deployment |
 
 ```
         ┌────────────────────────────┐
-        │  Shop server (pick one)    │   single source of truth
-        │  node server/index.js      │   revision counter on every row
-        │  api/  (PHP 8 + MySQL)     │
+        │  Node shop server          │   single source of truth
+        │  server/index.js           │   revision counter on every row
+        │  api/ (PHP, legacy opt.)   │
         └─────────────┬──────────────┘
                       │  GET /api/v1/sync?since=<rev>
-        ┌─────────────┴──────────────┐
-        │                            │
-┌───────▼─────────┐        ┌─────────▼────────┐
-│  Web (PWA)      │        │  Android         │
-│  docs/          │        │  android/        │
-│  localStorage   │        │  Room/JSON cache │
-│  + outbox       │        │  + outbox        │
-└─────────────────┘        └──────────────────┘
+        ┌─────────────┴──────────────┬──────────────────┐
+        │                            │                  │
+┌───────▼─────────┐        ┌─────────▼────────┐  ┌──────▼──────────┐
+│  Web (PWA)      │        │  Owner app       │  │  Customer app   │
+│  docs/          │        │  com.dxn.stockpoint        │  com.dxn.stockpoint.client
+│  localStorage   │        │  POS + admin     │  │  shop + account │
+└─────────────────┘        └──────────────────┘  └─────────────────┘
 ```
 
 - **One write path.** A sale made on the phone appears on the shop laptop within
@@ -73,12 +73,15 @@ for machine-to-machine auth via `X-Api-Key` — defaults to
 | Path | What it is |
 |---|---|
 | `server/` | Zero-dependency Node HTTP server: the full API + PWA file host + JSON persistence (`server/lib/db.js` is a mini DB engine with revision tracking) |
-| `api/` | PHP 8 + MySQL flavour of the same API — drop-in on shared hosting |
+| `api/` | PHP 8 + MySQL flavour of the same API — optional legacy deployment |
 | `docs/` | The web app (ES modules, no build step) + PWA manifest & service worker |
-| `android/DXNStockpoint/` | Kotlin + Jetpack Compose app |
+| `android/DXNStockpoint/core` | Shared Android library: API client, models, repository, cache, reusable UI |
+| `android/DXNStockpoint/owner-app` | Owner app (`com.dxn.stockpoint`) — POS, stock, orders, admin |
+| `android/DXNStockpoint/client-app` | Customer app (`com.dxn.stockpoint.client`) — shop, cart, account, tracking |
+| `deploy/` | Always-free Oracle Cloud + Docker + Caddy production stack |
 | `tests/` | `api.test.mjs` — the contract the web and Android clients depend on |
-| `scripts/` | Android toolchain provisioning, PHP contract verifiers, static checks |
-| `.github/workflows/` | Pages deploy, InfinityFree FTP deploy, APK/AAB build |
+| `scripts/` | Static checks, Android contract verifiers, legacy helpers |
+| `.github/workflows/` | Server tests + both Android apps, artefact and release publishing |
 
 > `backend/` is the retired v1 Node/SQLite server, kept for reference only.
 
@@ -141,28 +144,58 @@ Open `docs/suite.html` (or the deployed `…/suite.html`) for the unified
 The Stockpoint workspace loads the real app (`./index.html`) so sales, stock
 and orders stay live-synced with the backend.
 
-## Deploy for real
+## Android apps
 
-Full walkthrough in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). The short version:
+Both apps live in one Gradle project and share `:core`.
 
-1. **Single PC / shop LAN** — run `start-lan.cmd` (or `npm start`) on the shop
-   machine; the web app opens at `http://localhost:4173` and every phone on the
-   same Wi-Fi reaches the same server at `http://<shop-pc-ip>:4173` (Windows
-   asks for firewall permission once on first start). Android: Settings →
-   paste `http://<shop-pc-ip>:4173` → Save — both clients now share one live
-   catalogue, order history and stock ledger.
-2. **Docker / any host** — `docker build -t dxn-stockpoint .` then
-   `docker run -p 4173:4173 --env-file .env dxn-stockpoint`. Works on any VPS,
-   Render, Fly.io, Railway, Azure Container Apps, etc. Copy `.env.example` to
-   `.env` and set `DXN_PIN` + `DXN_ADMIN_KEY` (production mode refuses the
-   defaults). Point the web app and Android app at the public HTTPS URL.
-3. **Multi-device over the internet (PHP)** — upload `api/` to any PHP 8 host,
-   fill `api/config/config.php`, open `…/api/public/install.php?key=<key>` once,
-   then point both apps at that origin.
-4. **Web app hosting** — `docs/` is publishable anywhere static (GitHub Pages via
-   the included workflow). One address powers both clients.
-5. **Android** — `scripts/provision-android.ps1` (one-off) then
-   `scripts/build-android.ps1`; the APK/AAB lands in GitHub Releases.
+| App | Package | Use it for |
+|---|---|---|
+| Owner | `com.dxn.stockpoint` | Counter sales, stock takes, order status, customer desk, admin panel |
+| Customer | `com.dxn.stockpoint.client` | Catalogue, cart, DXN member pricing, account, order history, tracking |
+
+```bash
+cd android/DXNStockpoint
+./scripts/new-client-keystore.sh            # once: creates the customer signing key
+./scripts/build-apps.sh --release --api-url https://shop.example.com/
+./scripts/build-apps.sh --release --api-url https://shop.example.com/ --aab
+./scripts/build-apps.sh --debug --client-only
+./scripts/bump-version.sh 3.2.0             # versionCode + versionName
+```
+
+Release builds refuse the `shop.example.com` placeholder unless
+`--allow-placeholder` is passed, so an APK cannot ship pointed at a domain that
+does not exist. `DXN_API_URL` works as an alternative to `--api-url`.
+
+PowerShell equivalents (`build-apps.ps1`, `new-client-keystore.ps1`,
+`bump-version.ps1`) are included for Windows.
+
+- Release builds are minified (R8) with resource shrinking, HTTPS-only network
+  security, backups disabled and no cleartext traffic.
+- Signing credentials come from `DXN_*` environment variables or the gitignored
+  `.tooling/*.env` files. Each app has its own key; the owner package id is
+  unchanged so existing installations upgrade in place.
+- Point the build at the production API with
+  `--api-url https://shop.example.com/`, or set `dxn.apiBaseUrl` in
+  `gradle.properties`.
+- Icons, labels and the launcher are separate per app.
+
+## Deploy for real (permanently free)
+
+Full walkthrough in [deploy/README.md](deploy/README.md). The short version:
+
+1. **Oracle Cloud Always Free VM** (ARM Ampere, 1–4 OCPU / 6–24 GB) running
+   Ubuntu. Bootstrap installs Docker, swap and the firewall:
+   `sudo bash deploy/oracle-bootstrap.sh`.
+2. **Deploy from your computer** after pointing DNS at the VM:
+   `DXN_HOST=ubuntu@<ip> DXN_DOMAIN=shop.example.com ./deploy/deploy.sh`.
+   Caddy obtains and renews the HTTPS certificate automatically.
+3. **Backups** run daily through a systemd timer into
+   `/opt/dxn-stockpoint/backups`, with optional free Cloudflare R2 off-site
+   copies. `restore.sh` puts a backup back.
+4. **Local LAN** still works with `npm start` or `start-lan.cmd`; the web app
+   now defaults to its own origin, so no API URL is needed.
+5. **PHP** (`api/`) remains available for shared hosting but is no longer the
+   recommended production path.
 
 ## Troubleshooting
 

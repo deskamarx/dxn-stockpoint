@@ -58,7 +58,7 @@ final class Config
             'timezone'        => 'UTC',
             'debug'           => false,
             'trust_proxy'     => true,
-            'version'         => '2.2.0',
+            'version'         => '3.1.1',
         ];
 
         $merged = array_replace_recursive($defaults, $data);

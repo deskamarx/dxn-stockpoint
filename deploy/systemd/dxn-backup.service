@@ -1,0 +1,9 @@
+[Unit]
+Description=Back up the DXN Stockpoint database
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dxn-stockpoint/app/deploy/backup.sh
+Nice=10

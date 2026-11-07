@@ -7,22 +7,22 @@
  */
 
 const BASE_KEY = 'dxn.apiBase.v2';
-const LIVE_BASE = 'https://dxn.10001mb.com';
-/** Dead first-generation host; any stored value is re-pointed at LIVE_BASE. */
-const DEAD_HOST = /dxn\.infy\.click/gi;
+/** First-generation hosts that must never be used again. */
+const DEAD_HOSTS = /(dxn\.infy\.click|dxn\.10001mb\.com)/gi;
+/** Optional deploy-time override: <meta name="dxn-api-base" content="https://..."> */
+const META_BASE = typeof document !== 'undefined'
+  ? String(document.querySelector('meta[name="dxn-api-base"]')?.getAttribute('content') || '').trim()
+  : '';
 
 /**
- * The hosted web app defaults to the live cloud API. When it is served from
- * localhost (npm start / the bundled Node server) the same-origin API is used
- * instead, so local development still needs no configuration.
+ * The production deployment serves the web app and the API from the same
+ * origin, so the default is the page's own origin. A hosting setup with a
+ * separate API can either add the meta tag above or use Settings.
  */
 function defaultBase() {
-  if (typeof location === 'undefined') return LIVE_BASE;
-  const host = location.hostname;
-  if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '[::1]' || host === '') {
-    return '';
-  }
-  return LIVE_BASE;
+  if (typeof location === 'undefined') return '';
+  if (!/^https?:$/.test(location.protocol)) return '';
+  return normalizeBase(META_BASE || location.origin);
 }
 
 const DEFAULT_BASE = defaultBase();
@@ -61,12 +61,12 @@ export function normalizeBase(input) {
 export function getBase() {
   try {
     let stored = localStorage.getItem(BASE_KEY) || DEFAULT_BASE;
-    // Browsers that saved the dead host get moved to the live API in place.
-    if (stored && DEAD_HOST.test(stored)) {
-      stored = stored.replace(DEAD_HOST, 'dxn.10001mb.com').replace(/^http:\/\//i, 'https://');
-      localStorage.setItem(BASE_KEY, stored);
+    if (stored && DEAD_HOSTS.test(stored)) {
+      stored = defaultBase();
+      if (stored) localStorage.setItem(BASE_KEY, stored);
+      else localStorage.removeItem(BASE_KEY);
     }
-    DEAD_HOST.lastIndex = 0;
+    DEAD_HOSTS.lastIndex = 0;
     return stored;
   } catch {
     return DEFAULT_BASE;

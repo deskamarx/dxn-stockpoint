@@ -21,5 +21,7 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "DXNStockpoint"
-include(":app")
 
+include(":core")
+include(":owner-app")
+include(":client-app")
