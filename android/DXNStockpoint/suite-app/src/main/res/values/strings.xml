@@ -1,17 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">DXN Suite</string>
-
     <string name="action_reload">Reload</string>
     <string name="action_address">Address</string>
     <string name="action_open">Open</string>
     <string name="action_default">Use default</string>
     <string name="action_cancel">Cancel</string>
-
     <string name="address_title">Suite address</string>
     <string name="address_message">Use the suite served by your shop server, for example https://shop.example.com/suite.html. HTTPS is required except for a localhost shop server.</string>
     <string name="address_invalid">Enter a full HTTPS address (or http://localhost for a local shop server)</string>
-
     <string name="download_saved">Saved to Downloads</string>
     <string name="download_started">Download started</string>
     <string name="download_failed">Couldn\'t save that download</string>

@@ -1,6 +1,7 @@
 package com.dxn.stockpoint.data.api
 
 import android.content.Context
+import com.dxn.stockpoint.core.BuildConfig
 import com.dxn.stockpoint.core.CoreConfig
 import com.dxn.stockpoint.data.local.Prefs
 import okhttp3.OkHttpClient
@@ -28,7 +29,9 @@ object RetrofitClient {
     }
 
     private val loggingInterceptor = HttpLoggingInterceptor().apply {
-        level = HttpLoggingInterceptor.Level.BASIC
+        // Never leak request/response bodies (or tokens) in release builds.
+        level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC
+        else HttpLoggingInterceptor.Level.NONE
     }
 
     private val authInterceptor = okhttp3.Interceptor { chain ->
