@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DXN Suite — Stockpoint, Flow & Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#070b10;--bg2:#0d141c;--ink:#eaf1f6;--mute:#8b9bab;--glass:rgba(255,255,255,.055);--gb:rgba(255,255,255,.11);--sh:0 18px 50px rgba(0,0,0,.45);--sp:#34d399;--fl:#5eb0ff;--in:#f2b84b;--acc:var(--sp);--r:20px;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){--bg:#070b10}}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;font:14px/1.5 "DM Sans",system-ui,sans-serif;color:var(--ink);background:var(--bg);overflow:hidden}
+body::before{content:"";position:fixed;inset:0;z-index:-1;background:radial-gradient(60% 50% at 8% 0%,var(--g1,rgba(52,211,153,.16)),transparent 70%),radial-gradient(50% 45% at 95% 10%,var(--g2,rgba(94,176,255,.14)),transparent 70%),radial-gradient(55% 50% at 70% 105%,var(--g3,rgba(242,184,75,.12)),transparent 70%),linear-gradient(160deg,var(--bg),var(--bg2));transition:background .5s}
+body[data-ws=stockpoint]{--g1:rgba(52,211,153,.2);--g2:transparent;--g3:transparent}body[data-ws=flow]{--g1:rgba(94,176,255,.2);--g2:transparent;--g3:transparent}body[data-ws=pv]{--g1:rgba(183,156,255,.2);--g2:transparent;--g3:transparent}body[data-ws=intelligence]{--g1:rgba(242,184,75,.18);--g2:transparent;--g3:transparent}
+::selection{background:rgba(94,176,255,.35)}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
+h1,h2,h3,p{margin:0}
+h1,h2,h3,.brand b{font-family:"Bricolage Grotesque",sans-serif;letter-spacing:-.03em}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.glass{background:var(--glass);border:1px solid var(--gb);backdrop-filter:blur(22px) saturate(1.3);-webkit-backdrop-filter:blur(22px) saturate(1.3);box-shadow:var(--sh)}
+.shell{display:grid;grid-template-columns:236px minmax(0,1fr);gap:14px;height:100%;padding:14px}
+.rail{border-radius:var(--r);padding:16px 12px;display:flex;flex-direction:column;gap:6px;min-height:0}
+.brand{display:flex;align-items:center;gap:10px;padding:2px 6px 16px}
+.mark{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font:700 15px "Bricolage Grotesque",system-ui,sans-serif;color:#06110c;background:conic-gradient(from 210deg,var(--sp),var(--fl),var(--in),var(--sp))}
+.brand b{display:block;font-size:17px;line-height:1.1}.brand span{font-size:12px;color:var(--mute)}
+.nv{display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:14px;text-align:left;color:var(--mute);transition:background .18s,color .18s;position:relative;width:100%}
+.nv svg{width:20px;height:20px;flex:none;stroke:currentColor;fill:none;stroke-width:1.7}
+.nv .t{flex:1;min-width:0}.nv .t b{display:block;font-weight:600;font-size:14px;color:inherit}.nv .t small{display:block;font-size:11.5px;opacity:.75;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nv kbd{font:500 11px "DM Sans";padding:2px 6px;border-radius:6px;border:1px solid var(--gb);color:var(--mute)}
+.nv:hover{background:var(--glass);color:var(--ink)}
+.nv.on{background:color-mix(in srgb,var(--c) 16%,transparent);color:var(--ink);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 40%,transparent)}
+.nv.on svg{color:var(--c)}
+.nv .dot{width:7px;height:7px;border-radius:50%;background:var(--c);position:absolute;right:11px;top:11px;opacity:0}
+.nv.loaded .dot{opacity:.9}.nv.on .dot{opacity:0}
+.sp{flex:1}
+.foot{padding:12px 8px 2px;border-top:1px solid var(--gb);font-size:12px;color:var(--mute)}.foot b{color:var(--ink);font-weight:600;display:block}
+.main{display:flex;flex-direction:column;min-width:0;min-height:0;gap:12px}
+.top{display:flex;align-items:center;gap:14px;padding:4px 6px 0}
+.top h1{font-size:clamp(22px,2.6vw,30px);line-height:1.1}.top p{color:var(--mute);font-size:13px;margin-top:2px}
+.top .sp{flex:1}
+.seg{display:flex;gap:4px;padding:4px;border-radius:14px}
+.seg button{padding:7px 12px;border-radius:10px;color:var(--mute);font-weight:600;font-size:13px;display:flex;gap:7px;align-items:center}
+.seg button i{width:8px;height:8px;border-radius:50%;background:var(--c)}
+.seg button.on{background:color-mix(in srgb,var(--c) 20%,transparent);color:var(--ink)}
+.stage{position:relative;flex:1;min-height:0}
+.ws{position:absolute;inset:0;display:none}
+.ws.on{display:block;animation:in .28s ease both}
+@keyframes in{from{opacity:0;transform:scale(.992)}to{opacity:1;transform:none}}
+.frame{width:100%;height:100%;border:0;border-radius:var(--r);background:transparent;color-scheme:dark;overflow:hidden}
+.skel{position:absolute;inset:0;display:grid;place-items:center;border-radius:var(--r);color:var(--mute);gap:10px;align-content:center;justify-items:center;pointer-events:none;transition:opacity .3s}
+.skel.done{opacity:0}
+.spin{width:26px;height:26px;border-radius:50%;border:3px solid var(--gb);border-top-color:var(--c);animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.ov{height:100%;overflow:auto;padding:2px 4px 18px;scrollbar-width:thin}
+.lead{max-width:62ch;color:var(--mute);margin:6px 0 20px}
+.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.tile{border-radius:var(--r);padding:22px;display:flex;flex-direction:column;gap:14px;position:relative;overflow:hidden;text-align:left;transition:transform .2s,border-color .2s}
+.tile::before{content:"";position:absolute;width:260px;height:260px;right:-90px;top:-110px;border-radius:50%;background:radial-gradient(closest-side,color-mix(in srgb,var(--c) 38%,transparent),transparent);pointer-events:none}
+.tile:hover{transform:translateY(-3px);border-color:color-mix(in srgb,var(--c) 55%,transparent)}
+.glyph{width:46px;height:46px;border-radius:14px;display:grid;place-items:center;background:color-mix(in srgb,var(--c) 18%,transparent);color:var(--c)}
+.glyph svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.7}
+.tile h2{font-size:23px}.tile .d{color:var(--mute);max-width:36ch}
+.mods{display:flex;flex-wrap:wrap;gap:6px}
+.mods button,.mods span{padding:4px 10px;border-radius:99px;font-size:12px;border:1px solid var(--gb);color:var(--ink);background:rgba(255,255,255,.04)}
+.mods button:hover{border-color:var(--c);background:color-mix(in srgb,var(--c) 16%,transparent)}
+.go{margin-top:auto;display:flex;align-items:center;justify-content:space-between;padding-top:6px}
+.go .open{padding:9px 16px;border-radius:12px;font-weight:600;color:#06110c;background:var(--c)}
+.go kbd{font:500 12px "DM Sans";color:var(--mute);border:1px solid var(--gb);padding:3px 8px;border-radius:7px}
+.lane{margin-top:14px;border-radius:var(--r);padding:18px 22px;display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:14px;align-items:center}
+.lane div b{display:block;font-family:"Bricolage Grotesque",system-ui,sans-serif;font-size:16px;color:var(--c)}.lane div span{color:var(--mute);font-size:13px}
+.lane .ar{color:var(--mute);font-size:20px}
+.keys{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px 22px;color:var(--mute);font-size:13px;padding:0 6px}
+.keys kbd{font:500 12px "DM Sans";border:1px solid var(--gb);border-radius:6px;padding:2px 7px;color:var(--ink);margin-right:6px}
+.mnav{display:none}
+@media (max-width:1000px){.tiles{grid-template-columns:1fr}.lane{grid-template-columns:1fr}.lane .ar{display:none}.seg{display:none}}
+@media (max-width:860px){
+ body{overflow:hidden}
+ .shell{grid-template-columns:1fr;height:calc(100dvh - 72px - env(safe-area-inset-bottom,0px));padding:10px 10px 0;gap:10px}
+ .rail{display:none}
+ .mnav{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;padding:6px;border-radius:20px;position:fixed;left:10px;right:10px;bottom:calc(8px + env(safe-area-inset-bottom,0px));z-index:20}
+ .mnav button{display:flex;flex-direction:column;align-items:center;gap:2px;padding:7px 2px;border-radius:14px;color:var(--mute);font-size:11.5px;font-weight:600}
+ .mnav svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.7}
+ .mnav button.on{color:var(--ink);background:color-mix(in srgb,var(--c) 18%,transparent)}.mnav button.on svg{color:var(--c)}
+ .top{padding:2px 4px 0}.top p{display:none}
+ .keys{display:none}
+}
+:root{--pv:#b79cff}
+.pv{height:100%;overflow:auto;display:grid;grid-template-columns:minmax(300px,370px) minmax(0,1fr);gap:14px;align-items:start;padding:2px 4px 18px;scrollbar-width:thin}
+.card{border-radius:var(--r);padding:18px}.card h3{font-size:17px;margin-bottom:12px}
+.fld{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}.fld>span{font-size:12.5px;color:var(--mute)}
+.fld input,.fld select{width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--gb);background:rgba(255,255,255,.07);color:var(--ink);font:inherit;color-scheme:dark}
+.fld input:focus{outline:2px solid var(--pv);outline-offset:1px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.lv{display:grid;grid-template-columns:1fr 92px auto;gap:6px;margin-bottom:6px}
+.lv input{padding:8px 10px;border-radius:10px;border:1px solid var(--gb);background:rgba(255,255,255,.05);color:var(--ink);font:inherit;min-width:0}
+.mini{padding:7px 12px;border-radius:10px;border:1px solid var(--gb);font-weight:600;font-size:12.5px;background:rgba(255,255,255,.05)}
+.mini:hover,.mini.on{background:color-mix(in srgb,var(--pv) 22%,transparent);border-color:var(--pv)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.note{font-size:12px;color:var(--mute);margin-top:8px}
+.head{border-radius:var(--r);padding:20px;margin-bottom:14px}
+.head h2{font-size:clamp(22px,2.6vw,30px);line-height:1.15}.head p{color:var(--mute);margin-top:4px}
+.bar{height:10px;border-radius:99px;background:rgba(255,255,255,.08);margin-top:14px;overflow:hidden}.bar i{display:block;height:100%;border-radius:99px;background:var(--pv);transition:width .35s}
+.plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:14px}
+.plan{border-radius:var(--r);padding:18px;display:flex;flex-direction:column;gap:10px}
+.plan h3{font-size:17px}.plan .d{color:var(--mute);font-size:12.5px;margin-top:-6px}
+.tag{align-self:flex-start;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:600}
+.tag.ok{background:rgba(52,211,153,.16);color:#6fe0a0}.tag.warn{background:rgba(242,184,75,.16);color:#f2b84b}.tag.bad{background:rgba(255,138,122,.16);color:#ff8a7a}
+.ln{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-top:1px solid var(--gb);font-size:13px}.ln small{display:block;color:var(--mute)}.ln b{white-space:nowrap}
+.sum{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding-top:8px;border-top:1px solid var(--gb)}.sum span{font-size:11.5px;color:var(--mute);display:block}.sum b{font-family:"Bricolage Grotesque",system-ui,sans-serif;font-size:18px}
+.acts{display:flex;gap:8px;margin-top:auto;padding-top:6px}.acts .mini:first-child{background:var(--pv);color:#120a24;border-color:transparent}
+.toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#1a2430;border:1px solid var(--gb);padding:10px 16px;border-radius:12px;z-index:50;opacity:0;pointer-events:none;transition:opacity .25s}.toast.on{opacity:1}
+.strip{margin-top:14px;border-radius:var(--r);padding:16px 22px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;--c:var(--pv)}.strip .glyph{flex:none}.strip div.t{flex:1;min-width:220px}.strip b{font-family:"Bricolage Grotesque",system-ui,sans-serif;font-size:17px}.strip span.s{display:block;color:var(--mute);font-size:13px}
+@media (max-width:1000px){.pv{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-ov" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></symbol>
+<symbol id="i-sp" viewBox="0 0 24 24"><path d="M3 9l1.5-5h15L21 9v1.5a3 3 0 01-6 0 3 3 0 01-6 0 3 3 0 01-6 0z"/><path d="M5 13v7h14v-7M10 20v-4h4v4"/></symbol>
+<symbol id="i-fl" viewBox="0 0 24 24"><path d="M2.5 6.5h11v10h-11zM13.5 10h4l3 3v3.5h-7"/><circle cx="7" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/></symbol>
+<symbol id="i-in" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.5"/><path d="M12 3.5V6M12 18v2.5M3.5 12H6M18 12h2.5"/></symbol>
+<symbol id="i-pv" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 7.5h8M8.5 12h1M12 12h1M15.5 12h.5M8.5 16h1M12 16h1M15.5 16h.5"/></symbol></defs></svg>
+
+<div class="shell">
+ <aside class="rail glass" aria-label="Workspaces">
+  <div class="brand"><div class="mark">DX</div><div><b>DXN Suite</b><span>One platform, four workspaces</span></div></div>
+  <button class="nv on" data-ws="overview" style="--c:#cfd9e2"><svg><use href="#i-ov"/></svg><span class="t"><b>Overview</b><small>All workspaces</small></span><kbd>Ctrl 0</kbd></button>
+  <button class="nv" data-ws="stockpoint" style="--c:var(--sp)"><svg><use href="#i-sp"/></svg><span class="t"><b>Stockpoint</b><small>Sell, stock, buy</small></span><kbd>Ctrl 1</kbd><i class="dot"></i></button>
+  <button class="nv" data-ws="flow" style="--c:var(--fl)"><svg><use href="#i-fl"/></svg><span class="t"><b>Flow</b><small>Ship &amp; track</small></span><kbd>Ctrl 2</kbd><i class="dot"></i></button>
+  <button class="nv" data-ws="intelligence" style="--c:var(--in)"><svg><use href="#i-in"/></svg><span class="t"><b>Intelligence</b><small>Watch &amp; improve</small></span><kbd>Ctrl 3</kbd><i class="dot"></i></button>
+  <button class="nv" data-ws="pv" style="--c:var(--pv)"><svg><use href="#i-pv"/></svg><span class="t"><b>PV Planner</b><small>Month-end targets</small></span><kbd>Ctrl 4</kbd><i class="dot"></i></button>
+  <div class="sp"></div>
+  <div class="foot"><b>Mohammadpur Stock Point</b><span id="today"></span></div>
+ </aside>
+
+ <section class="main">
+  <header class="top">
+   <div><h1 id="ttl">Overview</h1><p id="sub"></p></div>
+   <div class="sp"></div>
+   <div class="seg glass" role="tablist" aria-label="Switch workspace">
+    <button data-ws="overview" style="--c:#cfd9e2"><i></i>Overview</button>
+    <button data-ws="stockpoint" style="--c:var(--sp)"><i></i>Stockpoint</button>
+    <button data-ws="flow" style="--c:var(--fl)"><i></i>Flow</button>
+    <button data-ws="intelligence" style="--c:var(--in)"><i></i>Intelligence</button>
+    <button data-ws="pv" style="--c:var(--pv)"><i></i>PV</button>
+   </div>
+  </header>
+
+  <div class="stage">
+   <div class="ws on" id="ws-overview">
+    <div class="ov">
+     <p class="lead" id="greet"></p>
+     <div class="tiles">
+      <article class="tile glass" style="--c:var(--sp)">
+       <div class="glyph"><svg><use href="#i-sp"/></svg></div>
+       <div><h2>Stockpoint</h2><p class="d">Ring up sales, manage products and stock, look after customers and keep the shop running.</p></div>
+       <div class="mods"><span>Point of sale</span><span>Orders</span><span>Customers</span><span>Stock control</span><span>Insights</span><span>Settings</span></div>
+       <div class="go"><button class="open" data-ws="stockpoint">Open Stockpoint</button><kbd>Ctrl 1</kbd></div>
+      </article>
+      <article class="tile glass" style="--c:var(--fl)">
+       <div class="glyph"><svg><use href="#i-fl"/></svg></div>
+       <div><h2>Flow</h2><p class="d">Review orders, create SteadFast shipments, update status and follow parcels to the door.</p></div>
+       <div class="mods" id="m-flow"></div>
+       <div class="go"><button class="open" data-ws="flow">Open Flow</button><kbd>Ctrl 2</kbd></div>
+      </article>
+      <article class="tile glass" style="--c:var(--in)">
+       <div class="glyph"><svg><use href="#i-in"/></svg></div>
+       <div><h2>Intelligence</h2><p class="d">See sales, stock and customer trends in one place, and act on what needs attention.</p></div>
+       <div class="mods" id="m-intelligence"></div>
+       <div class="go"><button class="open" data-ws="intelligence">Open Intelligence</button><kbd>Ctrl 3</kbd></div>
+      </article>
+     </div>
+     <div class="strip glass"><div class="glyph"><svg><use href="#i-pv"/></svg></div><div class="t"><b>PV Planner</b><span class="s">Month-end rush? Enter the PV gap and a budget, and get the best product mix from live stock.</span></div><button class="mini" data-ws="pv">Open PV Planner <kbd style="margin-left:6px;opacity:.7">Ctrl 4</kbd></button></div>
+     <div class="lane glass">
+      <div style="--c:var(--sp)"><b>Stockpoint</b><span>A sale is rung up and stock is reserved</span></div><span class="ar">→</span>
+      <div style="--c:var(--fl)"><b>Flow</b><span>The order is dispatched and tracked to the door</span></div><span class="ar">→</span>
+      <div style="--c:var(--in)"><b>Intelligence</b><span>Exceptions and cash are checked and closed out</span></div>
+     </div>
+     <div class="keys"><span><kbd>Ctrl 0</kbd>Overview</span><span><kbd>Ctrl 1</kbd>Stockpoint</span><span><kbd>Ctrl 2</kbd>Flow</span><span><kbd>Ctrl 3</kbd>Intelligence</span><span><kbd>Ctrl 4</kbd>PV Planner</span><span><kbd>Alt 0–3</kbd>Same, if your browser keeps Ctrl for tabs</span></div>
+    </div>
+   </div>
+   <div class="ws" id="ws-pv" style="--c:var(--pv)">
+    <div class="pv">
+     <div>
+      <div class="card glass">
+       <h3>Month-end target</h3>
+       <label class="fld"><span>Member name (optional)</span><input id="pvName" placeholder="e.g. Rahim Uddin"></label>
+       <div class="two">
+        <label class="fld"><span>PV earned so far</span><input id="pvCur" type="number" min="0" inputmode="numeric" value="0"></label>
+        <label class="fld"><span>Target PV</span><input id="pvTgt" type="number" min="0" inputmode="numeric" value="6000"></label>
+       </div>
+       <label class="fld"><span>Budget (৳)</span><input id="pvBud" type="number" min="0" inputmode="numeric" value="20000"></label>
+       <div class="fld"><span>Price this member pays</span><div class="chips"><button class="mini on" data-basis="member">Member DP</button><button class="mini" data-basis="retail">Retail MRP</button></div></div>
+       <label class="fld"><span>Most units of one product</span><input id="pvMax" type="number" min="1" inputmode="numeric" placeholder="No limit (stock only)"></label>
+       <div class="fld"><span>Product groups to include</span><div class="chips" id="pvCats"></div></div>
+      </div>
+      <div class="card glass" style="margin-top:14px">
+       <h3>Level targets</h3>
+       <div id="pvLv"></div>
+       <p class="note">These are starting numbers. Edit them to match your plan’s real level requirements; they are saved on this device.</p>
+      </div>
+     </div>
+     <div id="pvOut"></div>
+    </div>
+   </div>
+   <div class="ws" id="ws-stockpoint" style="--c:var(--sp)"><div class="skel glass"><div class="spin"></div>Opening Stockpoint</div></div>
+   <div class="ws" id="ws-flow" style="--c:var(--fl)"><div class="skel glass"><div class="spin"></div>Opening Flow</div></div>
+   <div class="ws" id="ws-intelligence" style="--c:var(--in)"><div class="skel glass"><div class="spin"></div>Opening Intelligence</div></div>
+  </div>
+ </section>
+</div>
+
+<nav class="mnav glass" aria-label="Workspaces">
+ <button data-ws="overview" style="--c:#cfd9e2"><svg><use href="#i-ov"/></svg>Overview</button>
+ <button data-ws="stockpoint" style="--c:var(--sp)"><svg><use href="#i-sp"/></svg>Stockpoint</button>
+ <button data-ws="flow" style="--c:var(--fl)"><svg><use href="#i-fl"/></svg>Flow</button>
+ <button data-ws="intelligence" style="--c:var(--in)"><svg><use href="#i-in"/></svg>Intelligence</button>
+ <button data-ws="pv" style="--c:var(--pv)"><svg><use href="#i-pv"/></svg>PV</button>
+</nav>
+
+<script>
+const META={
+ overview:{t:'Overview',s:'Pick a workspace. Each one keeps its own navigation and picks up where you left off.'},
+ stockpoint:{t:'Stockpoint',s:'Point of sale, products, inventory, customers and retail operations'},
+ flow:{t:'Flow',s:'Orders, courier partners, dispatch, shipment management and live tracking'},
+ intelligence:{t:'Intelligence',s:'Dashboard, sales analytics, stock watch and customer intelligence'},
+ pv:{t:'PV Planner',s:'Close the gap to a level upgrade with the right products for one member’s budget'}
+};
+const MODS={
+ flow:[['Orders','orders'],['Courier & dispatch','orders'],['Live tracking','track'],['Customers','customers']],
+ intelligence:[['Control tower','dashboard'],['Analytics','reports'],['Inventory watch','inventory'],['Customers','customers']]
+};
+const WS_HOME={stockpoint:'pos',flow:'orders',intelligence:'dashboard'};
+const IDS=['overview','stockpoint','flow','intelligence','pv'],KEYS={'0':'overview','1':'stockpoint','2':'flow','3':'intelligence','4':'pv'};
+const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
+const frames={},loaded={};
+let cur='overview';
+
+function mount(id){
+ if(frames[id])return frames[id];
+ const f=document.createElement('iframe');
+ f.className='frame';f.title=META[id].t+' workspace';
+ f.addEventListener('load',()=>{loaded[id]=true;$('.skel',$('#ws-'+id)).classList.add('done');$$('.nv[data-ws="'+id+'"]').forEach(n=>n.classList.add('loaded'))});
+ f.src='./index.html#/'+(WS_HOME[id]||'dashboard');
+ $('#ws-'+id).append(f);frames[id]=f;return f;
+}
+function goto(id,route){
+ const f=frames[id];if(!f||!route)return;
+ try{f.contentWindow.location.hash='#/'+route}catch(e){f.src='./index.html#/'+route}
+}
+function openWs(id,page){
+ if(!IDS.includes(id))id='overview';
+ cur=id;document.body.dataset.ws=id;
+ IDS.forEach(k=>$('#ws-'+k).classList.toggle('on',k===id));
+ $$('[data-ws].nv,.seg button,.mnav button').forEach(b=>b.classList.toggle('on',b.dataset.ws===id));
+ $('#ttl').textContent=META[id].t;$('#sub').textContent=META[id].s;
+ document.title=(id==='overview'?'DXN Suite':'DXN '+META[id].t)+' — DXN Suite';
+ if(id!=='overview'&&id!=='pv'){
+  const f=mount(id);
+  if(page)goto(id,page);
+  setTimeout(()=>{try{f.contentWindow.focus()}catch(e){}},60);
+ }
+ try{history.replaceState(null,'','#'+id)}catch(e){}
+ try{localStorage.setItem('dxn-suite-ws',id)}catch(e){}
+}
+window.dxnOpen=openWs;
+window.dxnKey=k=>{if(KEYS[k])openWs(KEYS[k])};
+
+document.addEventListener('click',e=>{const b=e.target.closest('[data-ws]');if(b)openWs(b.dataset.ws,b.dataset.page)});
+addEventListener('keydown',e=>{
+ if(e.shiftKey)return;
+ if(!(e.ctrlKey||e.metaKey||e.altKey))return;
+ const k=/^(Digit|Numpad)([0-4])$/.exec(e.code);
+ if(k){e.preventDefault();openWs(KEYS[k[2]])}
+},true);
+addEventListener('hashchange',()=>{const h=location.hash.slice(1);if(IDS.includes(h)&&h!==cur)openWs(h)});
+
+['flow','intelligence'].forEach(id=>{
+ $('#m-'+id).innerHTML=MODS[id].map(([l,p])=>`<button data-ws="${id}" data-page="${p}">${l}</button>`).join('');
+});
+const d=new Date(),h=d.getHours();
+$('#today').textContent=d.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+$('#greet').textContent=(h<12?'Good morning':h<18?'Good afternoon':'Good evening')+'. Everything you had in the three separate apps now lives here. Open a workspace, or jump straight to a module.';
+let start=location.hash.slice(1);
+if(!IDS.includes(start)){try{start=localStorage.getItem('dxn-suite-ws')||'overview'}catch(e){start='overview'}}
+openWs(IDS.includes(start)?start:'overview');
+/* ---------- PV Planner ---------- */
+let PROD=[["DXN-SOAP-GANO", "Ganozhi Soap 75g", "Personal Care", "470", "390", "65"], ["DXN-ALOE-BAR-1", "Aloe Vera Bathing Bar 100g", "Personal Care", "185", "155", "35"], ["DXN-NEEM-BAR-1", "Neem Bathing Bar 100g", "Personal Care", "210", "175", "35"], ["DXN-SHAMPOO-GANO", "Ganozhi Shampoo 200ml", "Personal Care", "440", "365", "65"], ["DXN-NEEM-FACEWASH", "Neem Face Wash 100ml", "Personal Care", "230", "190", "45"], ["DXN-PAPAYA-SCRUB", "Papaya Facial Scrub 100ml", "Personal Care", "280", "235", "55"], ["DXN-TOOTHPASTE-50", "Ganozhi Toothpaste 50g", "Personal Care", "640", "535", "70"], ["DXN-SUNSCREEN-100", "Sun Screen Lotion 100ml", "Personal Care", "295", "245", "35"], ["DXN-HAIR-OIL-100", "Hair Oil 100ml", "Personal Care", "710", "590", "135"], ["DXN-RISHI-GANO-TEA-200", "Rishi Gano Tea 200g", "Coffee & Tea", "545", "455", "90"], ["DXN-MASALA-TEA-100", "Masala Tea 100g", "Coffee & Tea", "300", "250", "60"], ["DXN-LZC-BLACK-20", "Lingzhi Black Coffee 5g×20", "Coffee & Tea", "1190", "990", "350"], ["DXN-LZC-3IN1-20", "Lingzhi Coffee 3-in-1", "Coffee & Tea", "2460", "2050", "475"], ["DXN-WHITE-COFFEE-20", "White Coffee Zhino", "Coffee & Tea", "2550", "2125", "290"], ["DXN-ZHI-MOCHA-20", "Zhi Mocha Coffee", "Coffee & Tea", "1510", "1260", "290"], ["DXN-EU-CAFE-20", "Eu Cafe", "Coffee & Tea", "2140", "1785", "300"], ["DXN-CORDYCEPS-COFFEE-20", "Cordyceps Coffee 3-in-1", "Coffee & Tea", "2330", "1940", "450"], ["DXN-LIONS-MANE-COFFEE-20", "Lion’s Mane Coffee", "Coffee & Tea", "2840", "2365", "390"], ["DXN-LEMONZHI-500", "Lemonzhi 500g", "Food & Drink", "895", "745", "175"], ["DXN-ZHI-YOBITE-30", "Zhi Yobite 30g", "Food & Drink", "840", "700", "125"], ["DXN-APPLE-JAM-300", "Apple Fermented Jam 300g", "Food & Drink", "1555", "1295", "225"], ["DXN-COCOZHI-500", "Cocozhi 500g", "Food & Drink", "2695", "2245", "525"], ["DXN-SPIRULINA-CEREAL-500", "Spirulina Cereal 500g", "Food & Drink", "3180", "2650", "540"], ["DXN-OOCHA-NOODLES", "Oocha Noodles", "Food & Drink", "1225", "1020", "175"], ["DXN-VEGGIE-NOODLE", "Veggie Noodle", "Food & Drink", "1060", "885", "170"], ["DXN-APPLE-ENZYME-750", "Apple Enzyme Drink 750ml", "Food & Drink", "4060", "3385", "570"], ["DXN-GOJI-BERRY", "Goji Berry", "Food & Drink", "4115", "3430", "625"], ["DXN-RG-POWDER-50", "RG Powder 50g", "Supplements", "4145", "3455", "1070"], ["DXN-GL-POWDER-80", "GL Powder 80g", "Supplements", "3060", "2550", "770"], ["DXN-CORDYCEPS-POWDER-30", "Cordyceps Powder 30g", "Supplements", "3275", "2730", "960"], ["DXN-LIONS-MANE-POWDER-30", "Lion’s Mane Powder 30g", "Supplements", "1680", "1400", "390"]],STOCKDEF=[48,50,3,50,0,22,50,7,50,31,12,50,4,50,26];
+const fmt=n=>'৳'+Math.round(n).toLocaleString('en-BD'),num=n=>Math.round(n).toLocaleString('en-BD');
+let PROD_IDS=PROD.map((_,i)=>i+1),LIVE_STOCK=null;
+const pv={basis:'member',cats:new Set(PROD.map(p=>p[2])),levels:[{n:'Level 1',v:3000},{n:'Level 2',v:6000},{n:'Level 3',v:10000}]};
+try{const l=JSON.parse(localStorage.getItem('dxn-pv-levels')||'null');if(Array.isArray(l)&&l.length)pv.levels=l}catch(e){}
+let lastPlans=[];
+function toast(m){let t=$('.toast');if(!t){t=document.createElement('div');t.className='toast';document.body.append(t)}t.textContent=m;t.classList.add('on');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('on'),2600)}
+function liveStock(){if(LIVE_STOCK)return LIVE_STOCK.slice();let st=null;try{st=(JSON.parse(localStorage.getItem('dxn-glass')||'null')||{}).stock}catch(e){}return PROD.map((_,i)=>st&&st[i]!=null?st[i]:STOCKDEF[i%15])}
+function gcd(a,b){return b?gcd(b,a%b):a}
+function bundles(){
+ const st=liveStock(),cap=parseInt($('#pvMax').value)||Infinity,out=[];
+ PROD.forEach((p,i)=>{if(!pv.cats.has(p[2]))return;const cost=+(pv.basis==='member'?p[4]:p[3]),v=+p[5],max=Math.min(st[i],cap);if(!(max>0&&v>0&&cost>0))return;
+  let r=max,k=1;while(r>0){const q=Math.min(k,r);out.push({i,q,cost:cost*q,pv:v*q});r-=q;k*=2}});
+ return out;
+}
+function cover(b,G,keyOf){const n=G+1,dp=new Float64Array(n).fill(Infinity);dp[0]=0;const take=new Uint8Array(b.length*n);
+ for(let k=0;k<b.length;k++){const it=b[k],key=keyOf(it);for(let v=G;v>=1;v--){const c=dp[Math.max(0,v-it.pv)]+key;if(c<dp[v]){dp[v]=c;take[k*n+v]=1}}}
+ if(!isFinite(dp[G]))return null;const pick={};let v=G;for(let k=b.length-1;k>=0;k--)if(take[k*n+v]){pick[b[k].i]=(pick[b[k].i]||0)+b[k].q;v=Math.max(0,v-b[k].pv)}return pick}
+function maxPv(b,B,g){const W=Math.floor(B/g),n=W+1,dp=new Float64Array(n),take=new Uint8Array(b.length*n);
+ for(let k=0;k<b.length;k++){const it=b[k],w=it.cost/g;for(let c=W;c>=w;c--){const x=dp[c-w]+it.pv;if(x>dp[c]){dp[c]=x;take[k*n+c]=1}}}
+ const pick={};let c=W;for(let k=b.length-1;k>=0;k--)if(take[k*n+c]){pick[b[k].i]=(pick[b[k].i]||0)+b[k].q;c-=b[k].cost/g}return pick}
+function toLines(pick){return Object.entries(pick).map(([i,q])=>{const p=PROD[i],u=+(pv.basis==='member'?p[4]:p[3]);return{i:+i,name:p[1],q,u,cost:u*q,pv:+p[5]*q}}).sort((a,b)=>b.pv-a.pv)}
+const tot=l=>({cost:l.reduce((a,x)=>a+x.cost,0),pv:l.reduce((a,x)=>a+x.pv,0),units:l.reduce((a,x)=>a+x.q,0)});
+function calc(){
+ const cur=+$('#pvCur').value||0,tgt=+$('#pvTgt').value||0,bud=+$('#pvBud').value||0,G=Math.round(tgt-cur),out=$('#pvOut');
+ const pct=tgt>0?Math.min(100,cur/tgt*100):0;
+ const who=$('#pvName').value.trim();
+ let head=`<div class="head glass"><h2>${G<=0?'Target reached. Nothing more to buy.':`${who?esc(who)+' needs ':'You need '}${num(G)} more PV`}</h2><p>${num(cur)} of ${num(tgt)} PV${G>0?` · budget ${fmt(bud)}`:''}</p><div class="bar"><i style="width:${pct}%"></i></div></div>`;
+ lastPlans=[];
+ if(G<=0||tgt<=0){out.innerHTML=head;return}
+ if(G>60000){out.innerHTML=head+'<div class="card glass">That gap is too large to plan in one go. Split it across two months or lower the target.</div>';return}
+ const b=bundles();
+ if(!b.length){out.innerHTML=head+'<div class="card glass">No in-stock products match these filters. Turn on more product groups or clear the unit limit.</div>';return}
+ const reach=b.reduce((a,x)=>a+x.pv,0);
+ if(reach<G){out.innerHTML=head+`<div class="card glass"><b>Stock can’t cover this gap.</b><p class="note">Everything available adds up to ${num(reach)} PV. Restock, add product groups, or lower the target.</p></div>`;return}
+ const plans=[];
+ const A=toLines(cover(b,G,x=>x.cost));
+ plans.push({t:'Lowest spend',d:'Cheapest way to reach the target.',l:A});
+ const g=b.reduce((a,x)=>gcd(a,x.cost),0)||1,B=Math.min(bud,g*60000);
+ if(bud>0){const m=toLines(maxPv(b,B,g));if(m.length)plans.push({t:'Most PV for the budget',d:'Spend up to the budget and get the highest PV.',l:m})}
+ const C=toLines(cover(b,G,x=>x.q*1e7+x.cost));
+ plans.push({t:'Fewest items',d:'Fewest units to carry, then cheapest.',l:C});
+ lastPlans=plans.map(p=>({...p,...tot(p.l)}));
+ out.innerHTML=head+'<div class="plans">'+lastPlans.map((p,k)=>{
+  const reached=p.pv>=G,fit=p.cost<=bud,extra=p.pv-G;
+  const tag=!fit?['bad','Over budget by '+fmt(p.cost-bud)]:reached?['ok','Reaches target'+(extra>0?' · +'+num(extra)+' PV extra':'')]:['warn','Short by '+num(G-p.pv)+' PV'];
+  const need=!fit?`<p class="note">You’d need ${fmt(p.cost-bud)} more to take this route.</p>`:'';
+  return `<article class="plan glass"><h3>${p.t}</h3><p class="d">${p.d}</p><span class="tag ${tag[0]}">${tag[1]}</span><div>${p.l.map(x=>`<div class="ln"><span>${esc(x.name)}<small>${x.q} × ${fmt(x.u)}</small></span><b>${num(x.pv)} PV</b></div>`).join('')}</div><div class="sum"><div><span>Spend</span><b>${fmt(p.cost)}</b></div><div><span>PV</span><b>${num(p.pv)}</b></div><div><span>Units</span><b>${p.units}</b></div></div>${need}<div class="acts"><button class="mini" data-pvcart="${k}">Add to Stockpoint cart</button><button class="mini" data-pvcopy="${k}">Copy</button></div></article>`}).join('')+'</div><p class="note" style="padding:0 6px">Stock, prices and PV are read live from the server catalogue.</p>';
+}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function drawLevels(){
+ $('#pvLv').innerHTML=pv.levels.map((l,k)=>`<div class="lv"><input data-lvn="${k}" value="${esc(l.n)}" aria-label="Level name"><input data-lvv="${k}" type="number" value="${l.v}" aria-label="Level PV"><button class="mini" data-lvuse="${k}">Use</button></div>`).join('');
+}
+function drawCats(){
+ const cats=[...new Set(PROD.map(p=>p[2]))];
+ $('#pvCats').innerHTML=cats.map(c=>`<button class="mini ${pv.cats.has(c)?'on':''}" data-pvcat="${esc(c)}">${esc(c)}</button>`).join('');
+}
+function planText(p){const who=$('#pvName').value.trim(),cur=+$('#pvCur').value||0,tgt=+$('#pvTgt').value||0;
+ return `PV plan${who?' for '+who:''}: ${num(cur)} → ${num(tgt)} PV\n${p.t}\n`+p.l.map(x=>`• ${x.name} × ${x.q} (${num(x.pv)} PV, ${fmt(x.cost)})`).join('\n')+`\nTotal: ${fmt(p.cost)} · ${num(p.pv)} PV · ${p.units} items`}
+function toCart(k){
+ const p=lastPlans[k];if(!p)return;
+ const lines=p.l.map(x=>({productId:PROD_IDS[x.i],qty:x.q})).filter(x=>x.productId);
+ if(!lines.length)return;
+ openWs('stockpoint');const f=frames.stockpoint;
+ const send=()=>{try{f.contentWindow.postMessage({type:'dxn:add-to-cart',tier:pv.basis,lines},location.origin);toast('Plan sent to the Stockpoint cart')}catch(e){toast('Could not reach Stockpoint')}};
+ loaded.stockpoint?setTimeout(send,120):f.addEventListener('load',()=>setTimeout(send,700),{once:true});
+}
+document.addEventListener('input',e=>{
+ if(e.target.closest('#ws-pv')){
+  if(e.target.dataset.lvn!=null)pv.levels[e.target.dataset.lvn].n=e.target.value;
+  if(e.target.dataset.lvv!=null)pv.levels[e.target.dataset.lvv].v=+e.target.value||0;
+  if(e.target.dataset.lvn!=null||e.target.dataset.lvv!=null){try{localStorage.setItem('dxn-pv-levels',JSON.stringify(pv.levels))}catch(x){}return}
+  clearTimeout(calc._t);calc._t=setTimeout(calc,120)}
+});
+document.addEventListener('click',e=>{
+ const t=e.target.closest('button');if(!t||!t.closest('#ws-pv'))return;
+ if(t.dataset.basis){pv.basis=t.dataset.basis;$$('[data-basis]').forEach(b=>b.classList.toggle('on',b===t));calc()}
+ else if(t.dataset.pvcat){const c=t.dataset.pvcat;pv.cats.has(c)?pv.cats.delete(c):pv.cats.add(c);drawCats();calc()}
+ else if(t.dataset.lvuse){$('#pvTgt').value=pv.levels[t.dataset.lvuse].v;calc()}
+ else if(t.dataset.pvcart)toCart(+t.dataset.pvcart);
+ else if(t.dataset.pvcopy){const x=planText(lastPlans[+t.dataset.pvcopy]);(navigator.clipboard?navigator.clipboard.writeText(x):Promise.reject()).then(()=>toast('Plan copied'),()=>toast('Copy not available here'))}
+});
+/* Live catalogue: replace the built-in fallback with the shop's real
+   products, prices, PV and stock as soon as the API answers. */
+(async()=>{
+ try{
+  const meta=document.querySelector('meta[name="dxn-api-base"]');
+  const base=((meta&&meta.content)||location.origin).replace(/\/+$/,'');
+  const res=await fetch(base+'/api/v1/products',{headers:{Accept:'application/json'}});
+  if(!res.ok)return;
+  const data=await res.json();
+  const list=(Array.isArray(data.products)?data.products:[]).filter(p=>Number(p.pv_points)>0);
+  if(!list.length)return;
+  PROD=list.map(p=>[p.sku||('P'+p.id),p.name,p.category||'General',String(p.retail_price||0),String(p.member_price||p.retail_price||0),String(p.pv_points||0)]);
+  PROD_IDS=list.map(p=>p.id);
+  LIVE_STOCK=list.map(p=>Math.max(0,Number(p.stock_qty)||0));
+  pv.cats=new Set(PROD.map(p=>p[2]));
+  drawCats();calc();
+ }catch(e){/* keep the offline fallback */}
+})();
+drawLevels();drawCats();calc();
+</script>
+</body>
+</html>
