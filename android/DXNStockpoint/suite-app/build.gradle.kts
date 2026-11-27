@@ -19,7 +19,7 @@ android {
         buildConfigField(
             "String",
             "SUITE_URL",
-            "\"https://deskamarx.github.io/dxn-stockpoint/suite.html\""
+            "\"https://deskamarx.github.io/dxn-stockpoint/suite.html#overview\""
         )
     }
 
