@@ -13,7 +13,7 @@ enum class AppRole { OWNER, CUSTOMER }
  */
 object CoreConfig {
     @Volatile var role: AppRole = AppRole.OWNER
-    @Volatile var defaultBaseUrl: String = "https://dxn.10001mb.com/"
+    @Volatile var defaultBaseUrl: String = "https://shop.example.com/"
 }
 
 /**
