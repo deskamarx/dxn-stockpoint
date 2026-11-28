@@ -22,7 +22,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dxn.stockpoint.BuildConfig
 import com.dxn.stockpoint.core.R
+import com.dxn.stockpoint.data.repository.StockpointRepository
 import com.dxn.stockpoint.ui.theme.*
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,6 +39,20 @@ fun SettingsScreen(
     var waPhone by remember(currentWaPhone) { mutableStateOf(currentWaPhone) }
     var urlSaved by remember { mutableStateOf(false) }
     var phoneSaved by remember { mutableStateOf(false) }
+
+    val repo = remember { StockpointRepository() }
+    val scope = rememberCoroutineScope()
+    var snapshots by remember { mutableStateOf(repo.snapshots()) }
+    var conflicts by remember { mutableStateOf(repo.conflicts()) }
+    var selectedSnapshot by remember { mutableStateOf<String?>(null) }
+    var snapshotMenuOpen by remember { mutableStateOf(false) }
+    var storageMessage by remember { mutableStateOf("") }
+
+    fun refreshStorage() {
+        snapshots = repo.snapshots()
+        conflicts = repo.conflicts()
+        if (selectedSnapshot == null) selectedSnapshot = snapshots.firstOrNull()?.name
+    }
 
     Scaffold(
         topBar = {
@@ -80,7 +96,7 @@ fun SettingsScreen(
                             value = serverUrl,
                             onValueChange = { serverUrl = it; urlSaved = false },
                             label = { Text("Base URL") },
-                            placeholder = { Text("https://dxn.10001mb.com/") },
+                            placeholder = { Text("https://your-shop.example.com/") },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
                             singleLine = true,
@@ -103,9 +119,9 @@ fun SettingsScreen(
                             Text("✅ URL saved. Reloading catalog…", color = EmeraldGreen, fontSize = 12.sp)
                         }
                         Text(
-                            "💡 Tip: the built-in default connects to the live shop API\n" +
-                            "(https://dxn.10001mb.com/). For local development, point this\n" +
-                            "at a tunnel or the emulator loopback instead.",
+                            "💡 Tip: the built-in default connects to the shop API baked\n" +
+                            "into this build. For local development or a tunnel, change\n" +
+                            "the origin here — the path is added automatically.",
                             fontSize = 11.sp, color = Color.Gray
                         )
                     }
@@ -148,6 +164,115 @@ fun SettingsScreen(
                         }
                         if (phoneSaved) {
                             Text("✅ WhatsApp number saved.", color = EmeraldGreen, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+
+            // Durability: snapshots, rollback and conflicts
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    elevation = CardDefaults.cardElevation(2.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("🗄️ On-device data", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = DarkText)
+                        Text(
+                            "${repo.pendingCount()} queued · ${conflicts.count { it.isPending }} conflicts · ${snapshots.size} snapshots",
+                            fontSize = 12.sp,
+                            color = Color.Gray,
+                        )
+                        Text(
+                            "Sales are written to a versioned SQLite store before they are sent. " +
+                            "Snapshots are taken before every schema upgrade; restoring one never deletes a newer sale.",
+                            fontSize = 12.sp,
+                            color = Color.Gray,
+                        )
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    repo.snapshot("manual")
+                                    refreshStorage()
+                                    storageMessage = "Snapshot saved."
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = ForestGreen),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text("Take a snapshot")
+                        }
+                        Box {
+                            TextButton(
+                                onClick = { snapshotMenuOpen = true },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(
+                                    selectedSnapshot?.let { "$it — restore" } ?: "Choose a snapshot",
+                                    fontSize = 12.sp,
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = snapshotMenuOpen,
+                                onDismissRequest = { snapshotMenuOpen = false },
+                            ) {
+                                snapshots.forEach { snap ->
+                                    DropdownMenuItem(
+                                        text = { Text("${snap.label} · ${snap.name}") },
+                                        onClick = {
+                                            selectedSnapshot = snap.name
+                                            snapshotMenuOpen = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        Button(
+                            onClick = {
+                                val name = selectedSnapshot
+                                if (name != null) {
+                                    scope.launch {
+                                        val restored = repo.rollback(name)
+                                        refreshStorage()
+                                        storageMessage = if (restored != null) {
+                                            "Restored $name — data is still intact."
+                                        } else {
+                                            "That snapshot is no longer available."
+                                        }
+                                    }
+                                }
+                            },
+                            enabled = selectedSnapshot != null,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB45309)),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text("Restore selected snapshot")
+                        }
+                        conflicts.filter { it.isPending }.take(3).forEach { conflict ->
+                            Text(
+                                "${conflict.kind} · ${conflict.entityId}: ${conflict.remote}",
+                                fontSize = 11.sp,
+                                color = Color.Gray,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        repo.resolveConflict(conflict.id, "kept_local")
+                                        refreshStorage()
+                                    }
+                                }) { Text("Keep local") }
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        repo.resolveConflict(conflict.id, "used_server")
+                                        refreshStorage()
+                                    }
+                                }) { Text("Use server") }
+                            }
+                        }
+                        if (storageMessage.isNotBlank()) {
+                            Text(storageMessage, fontSize = 12.sp, color = EmeraldGreen)
                         }
                     }
                 }

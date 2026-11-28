@@ -12,7 +12,6 @@ object Prefs {
 
     private const val FILE = "dxn_stockpoint_v2"
     private const val KEY_BASE_URL = "base_url"
-    private const val KEY_TOKEN = "token"
     private const val KEY_TOKEN_EXP = "token_expires_at"
     private const val KEY_WA_PHONE = "wa_phone"
     private const val KEY_TIER = "tier"
@@ -41,6 +40,8 @@ object Prefs {
         if (prefs == null) {
             prefs = context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
         }
+        // The session token is a secret: keep it behind the Android Keystore.
+        SecureStore.init(context)
     }
 
     private fun p(): SharedPreferences =
@@ -67,8 +68,8 @@ object Prefs {
         set(value) = p().edit().putString(KEY_BASE_URL, value).apply()
 
     var token: String?
-        get() = p().getString(KEY_TOKEN, null)?.takeIf { it.isNotBlank() }
-        set(value) = p().edit().putString(KEY_TOKEN, value).apply()
+        get() = SecureStore.getString(SecureStore.KEY_TOKEN)?.takeIf { it.isNotBlank() }
+        set(value) = SecureStore.putString(SecureStore.KEY_TOKEN, value)
 
     var tokenExpiresAt: String
         get() = p().getString(KEY_TOKEN_EXP, "") ?: ""
@@ -104,13 +105,15 @@ object Prefs {
     val isAdmin: Boolean get() = token != null
 
     fun clearSession() {
-        p().edit().remove(KEY_TOKEN).remove(KEY_TOKEN_EXP).apply()
+        SecureStore.remove(SecureStore.KEY_TOKEN)
+        p().edit().remove(KEY_TOKEN_EXP).apply()
     }
 
     /** Wipes everything except the server URL, so re-onboarding is instant. */
     fun resetDevice() {
         val base = baseUrl
         p().edit().clear().apply()
+        SecureStore.clearSecrets()
         baseUrl = base
     }
 }

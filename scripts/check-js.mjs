@@ -85,8 +85,8 @@ for (const file of files) {
         const trimmed = part.trim();
         if (!trimmed) continue;
         if (trimmed.startsWith('type ')) continue;
-        const [bound, imported] = trimmed.replace(/[{}]/g, '').split(/\s+as\s+/);
-        wanted.set((bound || '').trim(), (imported || bound || '').trim());
+        const [imported, bound] = trimmed.replace(/[{}]/g, '').split(/\s+as\s+/);
+        wanted.set((bound || imported || '').trim(), (imported || bound || '').trim());
       }
       for (const [localName, importedName] of wanted) {
         if (/^api$/.test(importedName)) {
@@ -140,6 +140,37 @@ if (existsSync(manifestPath)) {
 
 const indexExists = existsSync(join(docs, 'index.html'));
 if (!indexExists) fail('docs/index.html missing');
+
+// Release strings must agree across the package, the PWA shell and the API.
+try {
+  const pkgVersion = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
+  const swVersion = readFileSync(swPath, 'utf8').match(/const VERSION = 'dxn-stockpoint-([\d.]+)-r\d+'/)?.[1];
+  if (swVersion !== pkgVersion) fail(`sw.js version ${swVersion} disagrees with package.json ${pkgVersion}`);
+  const index = readFileSync(join(docs, 'index.html'), 'utf8');
+  if (!index.includes(`v${pkgVersion}`)) fail(`index.html does not show v${pkgVersion}`);
+} catch (error) {
+  fail(`release version check failed: ${error.message}`);
+}
+
+// API-surface consistency: every api.call() used by the front end must exist
+// on the transport object. This catches optimistic UI states that would call
+// a missing method and silently corrupt the local cache.
+const apiFile = join(docs, 'js', 'api.js');
+if (existsSync(apiFile)) {
+  const source = readFileSync(apiFile, 'utf8');
+  const methods = new Set();
+  for (const match of source.matchAll(/^  (?:async\s+)?([A-Za-z_$][\w$]*)\s*(?::|\()/gm)) {
+    methods.add(match[1]);
+  }
+  const used = new Set();
+  for (const file of files) {
+    const code = readFileSync(file, 'utf8');
+    for (const match of code.matchAll(/\bapi\.([A-Za-z_$][\w$]*)\s*\(/g)) used.add(match[1]);
+  }
+  for (const name of [...used].sort()) {
+    if (!methods.has(name)) fail(`api.${name}() is called by the front end but is not defined in api.js`);
+  }
+}
 
 if (problems) {
   console.error(`\n${problems} problem(s) found.`);

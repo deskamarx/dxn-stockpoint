@@ -249,7 +249,7 @@ data class CustomerTrackResponse(
     val order: Order? = null
 )
 
-// ── Sync & health ───────────────────────────────────────────────────────────// ── Sync & health ───────────────────────────────────────────────────────────
+// ── Sync & health ───────────────────────────────────────────────────────────
 
 data class SyncResponse(
     val success: Boolean = false,
@@ -260,6 +260,7 @@ data class SyncResponse(
     val orders: List<Order> = emptyList(),
     val settings: Map<String, Any?>? = null,
     val truncated: Boolean = false,
+    @SerializedName("next_since") val nextSince: Int? = null,
     @SerializedName("server_time") val serverTime: String = ""
 )
 

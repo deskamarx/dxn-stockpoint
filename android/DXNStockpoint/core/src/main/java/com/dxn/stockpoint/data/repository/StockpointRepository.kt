@@ -4,6 +4,9 @@ import com.dxn.stockpoint.core.AppRole
 import com.dxn.stockpoint.core.CoreConfig
 import com.dxn.stockpoint.data.api.RetrofitClient
 import com.dxn.stockpoint.data.local.CachedState
+import com.dxn.stockpoint.data.local.ConflictEntry
+import com.dxn.stockpoint.data.local.ConflictLog
+import com.dxn.stockpoint.data.local.DbSnapshot
 import com.dxn.stockpoint.data.local.JsonCache
 import com.dxn.stockpoint.data.local.OutboxEntry
 import com.dxn.stockpoint.data.model.*
@@ -324,9 +327,16 @@ class StockpointRepository {
         val response = api.sync(since)
         if (response.success) {
             val state = cachedState()
+            // A truncated page must not advance past records still waiting on
+            // the next page — the worker resumes from next_since.
+            val appliedRev = if (response.truncated) {
+                response.nextSince ?: response.since
+            } else {
+                response.serverRev
+            }
             JsonCache.saveState(
                 state.copy(
-                    rev = maxOf(state.rev, response.serverRev),
+                    rev = maxOf(since, state.rev, appliedRev),
                     products = if (response.products.isEmpty()) state.products
                     else mergeById(state.products, response.products),
                     orders = if (response.orders.isEmpty()) state.orders
@@ -344,6 +354,18 @@ class StockpointRepository {
     fun currentRev(): Int = cachedState().rev
 
     fun pendingCount(): Int = JsonCache.loadOutbox().count { it.status != "sending" }
+
+    // ── Durability ──────────────────────────────────────────────────────────
+
+    fun snapshots(): List<DbSnapshot> = JsonCache.snapshots()
+
+    fun snapshot(label: String = "manual") = JsonCache.takeSnapshot(label)
+
+    fun rollback(name: String) = JsonCache.rollback(name)
+
+    fun conflicts(): List<ConflictEntry> = ConflictLog.list()
+
+    fun resolveConflict(id: Long, choice: String) = ConflictLog.resolve(id, choice)
 
     fun resetDevice() {
         JsonCache.clear()

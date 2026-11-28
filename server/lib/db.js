@@ -26,7 +26,10 @@ import {
   verifyPin,
 } from './util.js';
 
-const VERSION = 3;
+/** Storage schema version. Bump only with an additive, replayable migration. */
+const VERSION = 4;
+/** Contract version reported to clients; matches the web/app release train. */
+const APP_VERSION = '3.2.0';
 
 const DEFAULT_SETTINGS = {
   branch_name: 'Mohammadpur Stock Point',
@@ -80,7 +83,21 @@ export class Database {
     this.initialPin = pin;
     this.adminKey = adminKey;
     this.data = null;
+    this.auditContextProvider = null;
+    this.auditFallback = { actor: 'system', role: 'SYSTEM' };
     this.load();
+  }
+
+  /** Lets the HTTP layer attach the current caller to every audit row it writes. */
+  setAuditContextProvider(provider) {
+    this.auditContextProvider = typeof provider === 'function' ? provider : null;
+  }
+
+  /** Used inside database methods that create a new identity (e.g. sign-in). */
+  setAuditContext(context) {
+    this.auditFallback = { actor: 'system', role: 'SYSTEM', ...(context || {}) };
+    const store = this.auditContextProvider?.();
+    if (store) Object.assign(store, this.auditFallback);
   }
 
   // ── Persistence ───────────────────────────────────────────────────────────
@@ -93,7 +110,15 @@ export class Database {
       } catch (error) {
         throw new Error(`Could not read ${this.dbPath}: ${error.message}`);
       }
+      const fromVersion = int(this.data.meta?.version, 1);
+      if (fromVersion < VERSION) {
+        // Keep an immutable copy before any additive migration. Rollback is
+        // exposed to the owner in Settings and never deletes the live file.
+        const snapshot = path.join(this.dataDir, `db.v${fromVersion}.snapshot.json`);
+        if (!fs.existsSync(snapshot)) fs.copyFileSync(this.dbPath, snapshot);
+      }
       this.migrate();
+      if (fromVersion < VERSION) this.save();
       return;
     }
     this.data = this.seed();
@@ -107,6 +132,9 @@ export class Database {
     data.meta.createdAt ||= nowIso();
     data.meta.rev = int(data.meta.rev, 0);
     data.meta.counters ||= { product: 0, order: 0, customer: 0, movement: 0 };
+    data.meta.counters.expense ||= 0;
+    data.meta.counters.staff ||= 0;
+    data.meta.counters.payment ||= 0;
     data.meta.orderDay ||= '';
     data.meta.orderSeq = int(data.meta.orderSeq, 0);
     data.settings ||= {};
@@ -117,6 +145,9 @@ export class Database {
     data.sessions ||= [];
     data.audit ||= [];
     data.customerAccounts ||= [];
+    data.expenses ||= [];
+    data.staff ||= [];
+    for (const order of data.orders) this.normalizeOrderPayments(order);
     for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
       if (!data.settings[key]) {
         data.settings[key] = { value: String(value), rev: 0, updated_at: nowIso() };
@@ -139,7 +170,7 @@ export class Database {
         rev: 1,
         pinSalt: salt,
         pinHash: hashPin(this.initialPin, salt),
-        counters: { product: 0, order: 0, customer: 0, movement: 0 },
+        counters: { product: 0, order: 0, customer: 0, movement: 0, expense: 0, staff: 0, payment: 0 },
         orderDay: '',
         orderSeq: 0,
       },
@@ -151,6 +182,8 @@ export class Database {
       sessions: [],
       audit: [],
       customerAccounts: [],
+      expenses: [],
+      staff: [],
     };
 
     for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
@@ -224,6 +257,47 @@ export class Database {
     this.save();
   }
 
+  /** Read-only list of the version snapshots kept beside the live database. */
+  snapshots() {
+    if (!fs.existsSync(this.dataDir)) return [];
+    return fs.readdirSync(this.dataDir)
+      .filter((name) => /^db\.v\d+\.snapshot\.json$/.test(name))
+      .sort()
+      .map((name) => {
+        const stat = fs.statSync(path.join(this.dataDir, name));
+        let version = 0;
+        let orders = 0;
+        try {
+          const parsed = JSON.parse(fs.readFileSync(path.join(this.dataDir, name), 'utf8'));
+          version = int(parsed?.meta?.version, 0);
+          orders = Array.isArray(parsed?.orders) ? parsed.orders.length : 0;
+        } catch { /* a damaged snapshot is still listed so it can be inspected */ }
+        return { name, version, orders, size: stat.size, created_at: stat.mtime.toISOString() };
+      });
+  }
+
+  /**
+   * Restores a pre-migration snapshot atomically, then replays the additive
+   * migration and bumps the revision so offline clients refetch. The live file
+   * is replaced after the copy succeeds; the snapshot itself is left in place.
+   */
+  rollback(fileName) {
+    const name = String(fileName || '');
+    if (!/^db\.v\d+\.snapshot\.json$/.test(name)) {
+      throw new ApiError('Choose a valid database snapshot', 422, 'invalid_snapshot');
+    }
+    const source = path.join(this.dataDir, name);
+    if (!fs.existsSync(source)) throw new ApiError('Snapshot not found', 404, 'not_found');
+    const temp = `${this.dbPath}.rollback.tmp`;
+    fs.copyFileSync(source, temp);
+    fs.renameSync(temp, this.dbPath);
+    this.load();
+    this.nextRev();
+    this.audit('database_rollback', 'settings', null, `restored ${name}`);
+    this.save();
+    return { snapshot: name, version: this.data.meta.version, server_rev: this.currentRev() };
+  }
+
   // ── Revisions & audit ─────────────────────────────────────────────────────
 
   nextRev() {
@@ -237,12 +311,15 @@ export class Database {
 
   audit(action, entity, entityId = null, detail = '') {
     const id = (this.data.audit.at(-1)?.id || 0) + 1;
+    const context = this.auditContextProvider?.() || this.auditFallback || {};
     this.data.audit.push({
       id,
       action: clean(action, 64),
       entity: clean(entity, 32),
       entity_id: entityId === null ? null : String(entityId),
       detail: clean(detail, 300),
+      actor: clean(context.actor || 'system', 80) || 'system',
+      role: clean(context.role || 'SYSTEM', 24) || 'SYSTEM',
       created_at: nowIso(),
     });
     if (this.data.audit.length > 2000) this.data.audit.splice(0, this.data.audit.length - 2000);
@@ -311,18 +388,42 @@ export class Database {
 
   login(pin) {
     if (!pin) throw new ApiError('PIN is required', 422, 'validation_error');
-    if (!verifyPin(String(pin), this.data.meta.pinSalt, this.data.meta.pinHash)) {
-      throw new ApiError('Incorrect PIN', 401, 'invalid_credentials');
+    let role = null;
+    let staff = null;
+    if (verifyPin(String(pin), this.data.meta.pinSalt, this.data.meta.pinHash)) {
+      role = 'ADMIN';
+    } else {
+      for (const row of this.data.staff || []) {
+        if (int(row.active, 1) !== 1) continue;
+        if (verifyPin(String(pin), row.salt, row.pin_hash)) {
+          role = String(row.role || 'CASHIER').toUpperCase();
+          staff = row;
+          break;
+        }
+      }
     }
+    if (!role) throw new ApiError('Incorrect PIN', 401, 'invalid_credentials');
     const token = randomToken(32);
     const expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
     this.data.sessions = this.data.sessions
       .filter((session) => new Date(session.expires_at).getTime() > Date.now())
       .slice(-40);
-    this.data.sessions.push({ token, created_at: nowIso(), expires_at: expires, role: 'admin' });
-    this.audit('signed_in', 'auth');
+    this.data.sessions.push({
+      token,
+      created_at: nowIso(),
+      expires_at: expires,
+      role,
+      staff_id: staff ? int(staff.id) : 0,
+    });
+    this.setAuditContext({ actor: staff ? clean(staff.name, 80) || String(staff.id) : 'Shop owner', role });
+    this.audit('signed_in', 'auth', staff ? staff.id : null, role);
     this.save();
-    return { token, expires_at: expires, role: 'admin' };
+    return {
+      token,
+      expires_at: expires,
+      role,
+      staff: staff ? this.mapStaff(staff) : { id: 0, name: 'Shop owner', role: 'ADMIN', active: 1 },
+    };
   }
 
   verifyToken(token) {
@@ -337,6 +438,168 @@ export class Database {
     if (!token) return;
     this.data.sessions = this.data.sessions.filter((item) => !safeEqual(item.token, token));
     this.save();
+  }
+
+  // ── Staff & roles ─────────────────────────────────────────────────────────
+
+  mapStaff(row) {
+    if (!row) return null;
+    return {
+      id: int(row.id),
+      name: String(row.name ?? 'Staff'),
+      role: String(row.role ?? 'CASHIER').toUpperCase(),
+      active: int(row.active, 1),
+      created_at: row.created_at ?? null,
+      updated_at: row.updated_at ?? null,
+      rev: int(row.rev, 0),
+    };
+  }
+
+  listStaff() {
+    return (this.data.staff || []).map((row) => this.mapStaff(row));
+  }
+
+  createStaff({ name, role, pin }) {
+    const cleanName = clean(name, 80);
+    const cleanRole = clean(role || 'CASHIER', 16).toUpperCase();
+    if (!cleanName) throw new ApiError('Staff name is required', 422, 'validation_error');
+    if (!['ADMIN', 'MANAGER', 'CASHIER', 'VIEWER'].includes(cleanRole)) {
+      throw new ApiError('role must be ADMIN, MANAGER, CASHIER or VIEWER', 422, 'validation_error');
+    }
+    if (!/^\d{4,8}$/.test(String(pin || ''))) {
+      throw new ApiError('The PIN must be 4 to 8 digits', 422, 'validation_error');
+    }
+    if (cleanRole === 'ADMIN' && this.listStaff().filter((s) => s.role === 'ADMIN' && s.active).length >= 3) {
+      throw new ApiError('Too many administrator accounts', 422, 'too_many_admins');
+    }
+    const salt = randomToken(16);
+    this.data.meta.counters.staff += 1;
+    const now = nowIso();
+    const row = {
+      id: this.data.meta.counters.staff,
+      name: cleanName,
+      role: cleanRole,
+      active: 1,
+      salt,
+      pin_hash: hashPin(String(pin), salt),
+      created_at: now,
+      updated_at: now,
+      rev: this.nextRev(),
+    };
+    this.data.staff.push(row);
+    this.audit('staff_created', 'staff', row.id, `${cleanName} · ${cleanRole}`);
+    this.save();
+    return this.mapStaff(row);
+  }
+
+  updateStaff(id, patch = {}) {
+    const row = (this.data.staff || []).find((item) => int(item.id) === int(id));
+    if (!row) throw new ApiError('Staff member not found', 404, 'not_found');
+    if (patch.name !== undefined) {
+      const nextName = clean(patch.name, 80);
+      if (!nextName) throw new ApiError('Staff name cannot be empty', 422, 'validation_error');
+      row.name = nextName;
+    }
+    if (patch.role !== undefined) {
+      const nextRole = clean(patch.role, 16).toUpperCase();
+      if (!['ADMIN', 'MANAGER', 'CASHIER', 'VIEWER'].includes(nextRole)) {
+        throw new ApiError('role must be ADMIN, MANAGER, CASHIER or VIEWER', 422, 'validation_error');
+      }
+      if (row.role === 'ADMIN' && nextRole !== 'ADMIN'
+        && this.listStaff().filter((s) => s.role === 'ADMIN' && s.active && s.id !== int(row.id)).length === 0) {
+        throw new ApiError('The shop must keep at least one administrator', 422, 'last_admin');
+      }
+      row.role = nextRole;
+    }
+    if (patch.active !== undefined) {
+      const nextActive = bool(patch.active) ? 1 : 0;
+      if (row.role === 'ADMIN' && !nextActive
+        && this.listStaff().filter((s) => s.role === 'ADMIN' && s.active && s.id !== int(row.id)).length === 0) {
+        throw new ApiError('The shop must keep at least one active administrator', 422, 'last_admin');
+      }
+      row.active = nextActive;
+    }
+    if (patch.pin !== undefined) {
+      if (!/^\d{4,8}$/.test(String(patch.pin || ''))) {
+        throw new ApiError('The PIN must be 4 to 8 digits', 422, 'validation_error');
+      }
+      row.salt = randomToken(16);
+      row.pin_hash = hashPin(String(patch.pin), row.salt);
+    }
+    row.updated_at = nowIso();
+    row.rev = this.nextRev();
+    this.audit('staff_updated', 'staff', row.id, row.name);
+    this.save();
+    return this.mapStaff(row);
+  }
+
+  deleteStaff(id) {
+    const row = (this.data.staff || []).find((item) => int(item.id) === int(id));
+    if (!row) throw new ApiError('Staff member not found', 404, 'not_found');
+    if (row.role === 'ADMIN'
+      && this.listStaff().filter((s) => s.role === 'ADMIN' && s.active && s.id !== int(row.id)).length === 0) {
+      throw new ApiError('The shop must keep at least one administrator', 422, 'last_admin');
+    }
+    this.data.staff = this.data.staff.filter((item) => int(item.id) !== int(row.id));
+    this.audit('staff_deleted', 'staff', row.id, row.name);
+    this.save();
+    return { deleted: true };
+  }
+
+  auditLog(limit = 200) {
+    const size = Math.max(1, Math.min(1000, int(limit, 200)));
+    return this.data.audit.slice(-size).reverse();
+  }
+
+  // ── Expenses ──────────────────────────────────────────────────────────────
+
+  mapExpense(row) {
+    return {
+      id: int(row.id),
+      client_uuid: row.client_uuid ?? null,
+      category: String(row.category ?? 'Other'),
+      amount: money(row.amount),
+      note: row.note ?? null,
+      spent_at: row.spent_at ?? row.created_at ?? null,
+      created_at: row.created_at ?? null,
+      rev: int(row.rev, 0),
+    };
+  }
+
+  listExpenses(limit = 300) {
+    const size = Math.max(1, Math.min(1000, int(limit, 300)));
+    return this.data.expenses
+      .slice()
+      .sort((a, b) => String(b.spent_at || b.created_at).localeCompare(String(a.spent_at || a.created_at)))
+      .slice(0, size)
+      .map((row) => this.mapExpense(row));
+  }
+
+  createExpense(payload = {}) {
+    const clientUuid = clean(payload.client_uuid, 64);
+    if (clientUuid) {
+      const existing = this.data.expenses.find((row) => row.client_uuid === clientUuid);
+      if (existing) return { expense: this.mapExpense(existing), duplicate: true };
+    }
+    const amount = money(payload.amount);
+    if (amount <= 0) throw new ApiError('Expense amount must be greater than zero', 422, 'validation_error');
+    const category = clean(payload.category || 'Other', 60) || 'Other';
+    const now = nowIso();
+    this.data.meta.counters.expense += 1;
+    const row = {
+      id: this.data.meta.counters.expense,
+      client_uuid: clientUuid || null,
+      category,
+      amount,
+      note: multiline(payload.note, 300) || null,
+      spent_at: clean(payload.spent_at, 40) || now,
+      created_at: now,
+      rev: this.nextRev(),
+    };
+    this.data.expenses.push(row);
+    this.audit('expense_created', 'expense', row.id, `${category} · ${amount}`);
+    this.save();
+    return { expense: this.mapExpense(row), duplicate: false };
   }
 
   // ── Customer accounts (ecommerce) ────────────────────────────────────────
@@ -762,12 +1025,54 @@ export class Database {
 
   // ── Orders ────────────────────────────────────────────────────────────────
 
+  /**
+   * Backfills payment fields on rows written before split payments existed.
+   * A legacy row whose status is PAID (or whose method is a cash rail) is
+   * treated as settled; a credit/unknown row starts unpaid. This is additive:
+   * no amount, status or line item is ever changed.
+   */
+  normalizeOrderPayments(order) {
+    if (!order || typeof order !== 'object') return order;
+    if (!Array.isArray(order.payments)) order.payments = [];
+    if (!Array.isArray(order.refunds)) order.refunds = [];
+    if (!order.type) order.type = 'SALE';
+    if (order.original_order_id === undefined) order.original_order_id = null;
+    if (order.refunded_amount === undefined) order.refunded_amount = 0;
+
+    if (order.type === 'RETURN') {
+      order.amount_paid = money(order.amount_paid);
+      order.due_amount = 0;
+      order.change_amount = 0;
+      order.payment_status = 'REFUNDED';
+      return order;
+    }
+
+    const total = money(order.total_amount);
+    if (order.amount_paid === undefined) {
+      const method = String(order.payment_method || 'CASH').toUpperCase();
+      const settled = order.status === 'PAID' || ['CASH', 'CARD', 'BKASH', 'NAGAD', 'WALLET', 'BANK TRANSFER'].includes(method);
+      order.amount_paid = settled ? total : 0;
+    }
+    order.amount_paid = money(order.amount_paid);
+    order.due_amount = money(Math.max(0, total - order.amount_paid));
+    order.change_amount = money(Math.max(0, order.amount_paid - total));
+    if (!order.payment_status) {
+      order.payment_status = order.due_amount > 0
+        ? (order.amount_paid > 0 ? 'PARTIALLY_PAID' : 'UNPAID')
+        : 'PAID';
+    }
+    return order;
+  }
+
   mapOrder(row) {
     if (!row) return null;
     return {
       id: int(row.id),
       client_uuid: row.client_uuid ?? null,
       order_number: String(row.order_number ?? ''),
+      type: String(row.type ?? 'SALE'),
+      original_order_id: row.original_order_id === null || row.original_order_id === undefined
+        ? null : int(row.original_order_id),
       customer_id: row.customer_id === null || row.customer_id === undefined ? null : int(row.customer_id),
       customer_name: String(row.customer_name ?? ''),
       customer_phone: row.customer_phone ?? null,
@@ -779,6 +1084,11 @@ export class Database {
       total_pv: money(row.total_pv),
       status: String(row.status ?? 'CONFIRMED'),
       payment_method: String(row.payment_method ?? 'CASH'),
+      payment_status: String(row.payment_status ?? 'PAID'),
+      amount_paid: money(row.amount_paid),
+      due_amount: money(row.due_amount),
+      change_amount: money(row.change_amount),
+      refunded_amount: money(row.refunded_amount),
       note: row.note ?? null,
       source: String(row.source ?? 'web'),
       courier_provider: row.courier_provider ?? null,
@@ -790,6 +1100,28 @@ export class Database {
       created_at: row.created_at ?? null,
       updated_at: row.updated_at ?? null,
       rev: int(row.rev, 0),
+      payments: Array.isArray(row.payments)
+        ? row.payments.map((payment) => ({
+          id: int(payment.id),
+          client_uuid: payment.client_uuid ?? null,
+          amount: money(payment.amount),
+          method: String(payment.method ?? 'CASH'),
+          reference: payment.reference ?? null,
+          note: payment.note ?? null,
+          paid_at: payment.paid_at ?? null,
+        }))
+        : [],
+      refunds: Array.isArray(row.refunds)
+        ? row.refunds.map((refund) => ({
+          id: int(refund.id),
+          client_uuid: refund.client_uuid ?? null,
+          amount: money(refund.amount),
+          method: String(refund.method ?? 'CASH'),
+          reason: refund.reason ?? null,
+          return_order_id: refund.return_order_id === undefined ? null : int(refund.return_order_id),
+          refunded_at: refund.refunded_at ?? null,
+        }))
+        : [],
       items: Array.isArray(row.items)
         ? row.items.map((item) => ({
           product_id: int(item.product_id),
@@ -807,6 +1139,7 @@ export class Database {
 
   orders(filters = {}) {
     let rows = this.data.orders.slice();
+    if (filters.type) rows = rows.filter((order) => String(order.type || 'SALE') === filters.type);
     if (filters.status) rows = rows.filter((order) => order.status === filters.status);
     if (filters.from) rows = rows.filter((order) => dateKey(order.created_at) >= filters.from);
     if (filters.to) rows = rows.filter((order) => dateKey(order.created_at) <= filters.to);
@@ -847,8 +1180,65 @@ export class Database {
     return orderNumber(this.data.meta.orderSeq, new Date());
   }
 
-  createOrder(payload, { isAdmin = false, customerId = null } = {}) {
-    if (!isAdmin && this.setting('allow_public_orders', '1') !== '1') {
+  /**
+   * Turns the many shapes a client can send into one canonical payment set.
+   * Older clients send only payment_method; the Android app sends amount_paid;
+   * the POS sends a split list. Change is only carved out of cash rails.
+   */
+  normalizePayments(payload, total) {
+    const methods = ['CASH', 'CARD', 'BKASH', 'NAGAD', 'BANK TRANSFER', 'WALLET', 'CREDIT'];
+    const raw = Array.isArray(payload?.payments) ? payload.payments : [];
+    let payments = [];
+    for (const entry of raw) {
+      if (!entry || typeof entry !== 'object') continue;
+      const amount = money(entry.amount);
+      const method = clean(entry.method || 'CASH', 24).toUpperCase();
+      if (amount <= 0 || !methods.includes(method) || method === 'CREDIT') continue;
+      payments.push({
+        method,
+        amount,
+        reference: clean(entry.reference, 120) || null,
+        note: clean(entry.note, 200) || null,
+        client_uuid: clean(entry.client_uuid, 64) || null,
+      });
+    }
+
+    let paid;
+    if (payments.length) {
+      paid = round(payments.reduce((sum, entry) => sum + entry.amount, 0));
+    } else if (payload?.amount_paid !== undefined) {
+      paid = money(payload.amount_paid);
+    } else {
+      const method = clean(payload?.payment_method || 'CASH', 24).toUpperCase();
+      paid = method === 'CREDIT' ? 0 : money(total);
+    }
+    paid = Math.max(0, money(paid));
+
+    let change = 0;
+    if (paid > total) {
+      change = money(paid - total);
+      let excess = change;
+      for (let i = payments.length - 1; i >= 0 && excess > 0; i -= 1) {
+        const cut = Math.min(payments[i].amount, excess);
+        payments[i].amount = money(payments[i].amount - cut);
+        excess = money(excess - cut);
+      }
+      payments = payments.filter((entry) => entry.amount > 0);
+      paid = money(total);
+    }
+
+    const due = money(Math.max(0, money(total) - paid));
+    return {
+      payments,
+      paid: money(paid),
+      due,
+      change,
+      status: due > 0 ? (paid > 0 ? 'PARTIALLY_PAID' : 'UNPAID') : 'PAID',
+    };
+  }
+
+  createOrder(payload, { isAdmin = false, isStaff = false, customerId = null } = {}) {
+    if (!isAdmin && !isStaff && this.setting('allow_public_orders', '1') !== '1') {
       throw new ApiError('Ordering is currently disabled for this stockpoint', 403, 'ordering_disabled');
     }
 
@@ -914,6 +1304,18 @@ export class Database {
     const now = nowIso();
     const rev = this.nextRev();
     const orderNumberValue = this.nextOrderNumber();
+    const payment = this.normalizePayments(payload, total);
+
+    // A credit balance must be attached to somebody the shop can chase.
+    if (payment.due > 0 && !linkedCustomerId
+      && !clean(payload.customer_phone, 40)
+      && !clean(payload.dxn_member_id, 40)) {
+      throw new ApiError(
+        'A credit sale needs a customer phone number or a DXN member ID',
+        422,
+        'customer_required',
+      );
+    }
 
     const resolvedCustomerId = linkedCustomerId || this.touchCustomer({
       name: customerName,
@@ -930,6 +1332,8 @@ export class Database {
       id: this.data.meta.counters.order,
       client_uuid: clientUuid || null,
       order_number: orderNumberValue,
+      type: 'SALE',
+      original_order_id: null,
       customer_id: resolvedCustomerId,
       customer_name: customerName,
       customer_phone: clean(payload.customer_phone || (linkedCustomer ? linkedCustomer.phone : ''), 40) || null,
@@ -939,10 +1343,20 @@ export class Database {
       discount,
       total_amount: total,
       total_pv: totalPv,
-      status: ['CASH', 'CARD', 'BKASH', 'NAGAD', 'WALLET'].includes(clean(payload.payment_method || 'CASH', 24).toUpperCase() || 'CASH')
-        ? 'PAID'
-        : 'CONFIRMED',
-      payment_method: clean(payload.payment_method || 'CASH', 24).toUpperCase() || 'CASH',
+      status: payment.due > 0 ? 'CONFIRMED' : 'PAID',
+      payment_method: payment.payments[0]?.method
+        || clean(payload.payment_method || 'CASH', 24).toUpperCase()
+        || 'CASH',
+      payment_status: payment.status,
+      amount_paid: payment.paid,
+      due_amount: payment.due,
+      change_amount: payment.change,
+      refunded_amount: 0,
+      payments: payment.payments.map((entry) => {
+        this.data.meta.counters.payment += 1;
+        return { id: this.data.meta.counters.payment, ...entry, paid_at: now };
+      }),
+      refunds: [],
       note: payload.note ? multiline(payload.note, 500) : null,
       source: clean(payload.source || 'web', 24) || 'web',
       courier_provider: null,
@@ -970,19 +1384,337 @@ export class Database {
     for (const line of resolved) {
       this.applyStockDelta(line.product.id, -line.quantity, 'sale', order.id, true, allowOversell);
     }
-    this.audit('created', 'order', order.id, `${orderNumberValue} · ${total}`);
+    this.audit('created', 'order', order.id, `${orderNumberValue} · ${total} · ${payment.status}`);
     this.save();
     return { order: this.mapOrder(order), duplicate: false };
+  }
+
+  orderBalance(orderOrId) {
+    const order = typeof orderOrId === 'object' ? orderOrId : this.orderRow(orderOrId);
+    if (!order) return { total: 0, paid: 0, due: 0, refunded: 0, refundable: 0 };
+    this.normalizeOrderPayments(order);
+    const total = money(order.total_amount);
+    const paid = money(order.amount_paid);
+    const refunded = money(order.refunded_amount);
+    return {
+      total,
+      paid,
+      due: money(Math.max(0, total - paid)),
+      refunded,
+      refundable: money(Math.max(0, paid - refunded)),
+    };
+  }
+
+  /** A human-readable, append-only history for one order. */
+  orderTimeline(id) {
+    const order = this.orderRow(id);
+    if (!order) throw new ApiError('Order not found', 404, 'not_found');
+    this.normalizeOrderPayments(order);
+    const events = [{
+      at: order.created_at,
+      kind: 'created',
+      label: `${order.order_number} created`,
+      amount: money(order.total_amount),
+    }];
+    for (const payment of order.payments || []) {
+      events.push({
+        at: payment.paid_at,
+        kind: 'payment',
+        label: `${payment.method} payment${payment.reference ? ` · ${payment.reference}` : ''}`,
+        amount: money(payment.amount),
+      });
+    }
+    for (const refund of order.refunds || []) {
+      events.push({
+        at: refund.refunded_at,
+        kind: 'refund',
+        label: `Refund via ${refund.method}${refund.reason ? ` · ${refund.reason}` : ''}`,
+        amount: -money(refund.amount),
+      });
+    }
+    for (const row of this.data.orders) {
+      if (int(row.original_order_id) !== int(order.id) || row.type !== 'RETURN') continue;
+      events.push({
+        at: row.created_at,
+        kind: 'return',
+        label: `Return ${row.order_number} restored stock`,
+        amount: money(row.total_amount),
+      });
+    }
+    for (const entry of this.data.audit) {
+      if (entry.entity !== 'order' || String(entry.entity_id) !== String(order.id)) continue;
+      if (['created', 'payment_recorded', 'return_created'].includes(entry.action)) continue;
+      events.push({
+        at: entry.created_at,
+        kind: 'audit',
+        label: entry.detail ? `${entry.action} · ${entry.detail}` : entry.action,
+        amount: null,
+      });
+    }
+    return events.sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')));
+  }
+
+  /** Flattened payment ledger used by cash reconciliation and PDF exports. */
+  paymentLedger(from = '', to = '') {
+    const rows = [];
+    for (const order of this.data.orders) {
+      this.normalizeOrderPayments(order);
+      if (from && dateKey(order.created_at) < from) continue;
+      if (to && dateKey(order.created_at) > to) continue;
+      for (const payment of order.payments || []) {
+        rows.push({
+          id: int(payment.id),
+          order_id: int(order.id),
+          order_number: order.order_number,
+          amount: money(payment.amount),
+          method: String(payment.method || 'CASH'),
+          reference: payment.reference ?? null,
+          customer_name: order.customer_name,
+          paid_at: payment.paid_at || order.created_at,
+        });
+      }
+      for (const refund of order.refunds || []) {
+        rows.push({
+          id: int(refund.id),
+          order_id: int(order.id),
+          order_number: order.order_number,
+          amount: -money(refund.amount),
+          method: `REFUND · ${refund.method}`,
+          reference: refund.reason ?? null,
+          customer_name: order.customer_name,
+          paid_at: refund.refunded_at || order.created_at,
+        });
+      }
+    }
+    rows.sort((a, b) => String(b.paid_at).localeCompare(String(a.paid_at)));
+    const byMethod = {};
+    for (const row of rows) {
+      byMethod[row.method] = round(money(byMethod[row.method] || 0) + money(row.amount));
+    }
+    return {
+      payments: rows,
+      count: rows.length,
+      collected: round(rows.reduce((sum, row) => sum + Math.max(0, money(row.amount)), 0)),
+      refunded: round(rows.reduce((sum, row) => sum + Math.max(0, -money(row.amount)), 0)),
+      by_method: byMethod,
+    };
+  }
+
+  /**
+   * Records money against an existing sale. Idempotent by client_uuid so the
+   * outbox can retry after a dropped response without double-counting.
+   */
+  recordPayment(orderId, payload = {}) {
+    const order = this.orderRow(orderId);
+    if (!order) throw new ApiError('Order not found', 404, 'not_found');
+    if (order.type === 'RETURN') throw new ApiError('Cannot record a payment against a return', 422, 'invalid_order');
+    if (order.status === 'CANCELLED') throw new ApiError('This order was cancelled', 422, 'order_cancelled');
+
+    const clientUuid = clean(payload.client_uuid, 64);
+    if (clientUuid) {
+      for (const row of this.data.orders) {
+        const found = (row.payments || []).find((entry) => entry.client_uuid === clientUuid);
+        if (found) return { order: this.mapOrder(row), payment: found, duplicate: true };
+      }
+    }
+
+    this.normalizeOrderPayments(order);
+    const amount = money(payload.amount);
+    if (amount <= 0) throw new ApiError('Payment amount must be greater than zero', 422, 'validation_error');
+    const method = clean(payload.method || 'CASH', 24).toUpperCase() || 'CASH';
+    const methods = ['CASH', 'CARD', 'BKASH', 'NAGAD', 'BANK TRANSFER', 'WALLET'];
+    if (!methods.includes(method)) {
+      throw new ApiError(`method must be one of: ${methods.join(', ')}`, 422, 'validation_error');
+    }
+
+    const balance = this.orderBalance(order);
+    if (amount > balance.due + 0.009) {
+      throw new ApiError(`Payment exceeds the ${balance.due.toFixed(2)} still due`, 422, 'overpayment');
+    }
+
+    this.data.meta.counters.payment += 1;
+    const payment = {
+      id: this.data.meta.counters.payment,
+      client_uuid: clientUuid || null,
+      amount,
+      method,
+      reference: clean(payload.reference, 120) || null,
+      note: clean(payload.note, 200) || null,
+      paid_at: nowIso(),
+    };
+    order.payments.push(payment);
+    order.amount_paid = money(order.amount_paid + amount);
+    order.due_amount = money(Math.max(0, money(order.total_amount) - order.amount_paid));
+    order.change_amount = money(Math.max(0, order.amount_paid - money(order.total_amount)));
+    order.payment_status = order.due_amount <= 0 ? 'PAID' : 'PARTIALLY_PAID';
+    if (order.due_amount <= 0) order.status = 'PAID';
+    else if (order.status === 'PAID') order.status = 'CONFIRMED';
+    order.updated_at = nowIso();
+    order.rev = this.nextRev();
+    this.audit('payment_recorded', 'order', order.id, `${amount} via ${method}; ${order.due_amount} due`);
+    this.save();
+    return { order: this.mapOrder(order), payment, duplicate: false };
+  }
+
+  /**
+   * A return is a new linked order with negative quantities, never an edit of
+   * the original. That keeps the audit trail and every report honest.
+   */
+  createReturn(orderId, payload = {}) {
+    const original = this.orderRow(orderId);
+    if (!original) throw new ApiError('Order not found', 404, 'not_found');
+    if (original.type === 'RETURN') throw new ApiError('A return cannot be returned again', 422, 'invalid_order');
+    if (original.status === 'CANCELLED') throw new ApiError('This order was cancelled', 422, 'order_cancelled');
+
+    const clientUuid = clean(payload.client_uuid, 64);
+    if (clientUuid) {
+      const existing = this.data.orders.find((row) => row.type === 'RETURN' && row.client_uuid === clientUuid);
+      if (existing) {
+        return { order: this.mapOrder(existing), original: this.mapOrder(original), duplicate: true };
+      }
+    }
+
+    const requested = Array.isArray(payload.items) ? payload.items : [];
+    if (!requested.length) throw new ApiError('Choose at least one item to return', 422, 'validation_error');
+
+    const alreadyReturned = new Map();
+    for (const row of this.data.orders) {
+      if (row.type !== 'RETURN' || int(row.original_order_id) !== int(original.id)) continue;
+      for (const item of row.items || []) {
+        const key = int(item.product_id);
+        alreadyReturned.set(key, (alreadyReturned.get(key) || 0) + Math.abs(int(item.quantity)));
+      }
+    }
+
+    const resolved = [];
+    for (const item of requested) {
+      const productId = int(item?.product_id);
+      const quantity = Math.max(0, int(item?.quantity));
+      if (!productId || quantity <= 0) continue;
+      const sold = (original.items || []).find((line) => int(line.product_id) === productId);
+      if (!sold) throw new ApiError(`Product ${productId} is not on this order`, 422, 'invalid_item');
+      const remaining = int(sold.quantity) - (alreadyReturned.get(productId) || 0);
+      if (quantity > remaining) {
+        throw new ApiError(`Cannot return ${quantity} of "${sold.name}" — only ${remaining} remain returnable`, 422, 'invalid_quantity');
+      }
+      resolved.push({ sold, quantity });
+    }
+    if (!resolved.length) throw new ApiError('No valid return items were supplied', 422, 'validation_error');
+
+    const balance = this.orderBalance(original);
+    const goodsValue = money(resolved.reduce((sum, line) => sum + money(line.sold.unit_price) * line.quantity, 0));
+    const refundAmount = money(Math.min(goodsValue, balance.refundable));
+    const returnPv = money(resolved.reduce((sum, line) => sum + money(line.sold.unit_pv) * line.quantity, 0));
+    const now = nowIso();
+    const rev = this.nextRev();
+    const orderNumberValue = this.nextOrderNumber();
+    const refundMethod = clean(payload.refund_method || 'CASH', 24).toUpperCase() || 'CASH';
+    const reason = multiline(payload.reason, 300) || null;
+
+    this.data.meta.counters.order += 1;
+    const returnOrder = {
+      id: this.data.meta.counters.order,
+      client_uuid: clientUuid || null,
+      order_number: orderNumberValue,
+      type: 'RETURN',
+      original_order_id: int(original.id),
+      customer_id: original.customer_id ?? null,
+      customer_name: original.customer_name,
+      customer_phone: original.customer_phone ?? null,
+      dxn_member_id: original.dxn_member_id ?? null,
+      is_member: int(original.is_member),
+      subtotal: money(-goodsValue),
+      discount: 0,
+      total_amount: money(-refundAmount),
+      total_pv: money(-returnPv),
+      status: 'REFUNDED',
+      payment_method: refundMethod,
+      payment_status: 'REFUNDED',
+      amount_paid: 0,
+      due_amount: 0,
+      change_amount: 0,
+      refunded_amount: 0,
+      payments: [],
+      refunds: [],
+      note: reason,
+      source: clean(payload.source || 'web', 24) || 'web',
+      courier_provider: null,
+      courier_consignment_id: null,
+      courier_tracking_code: null,
+      courier_status: null,
+      courier_cod_amount: null,
+      courier_created_at: null,
+      created_at: now,
+      updated_at: now,
+      rev,
+      items: resolved.map(({ sold, quantity }) => ({
+        product_id: int(sold.product_id),
+        sku: String(sold.sku ?? ''),
+        name: String(sold.name ?? ''),
+        quantity: -quantity,
+        unit_price: money(sold.unit_price),
+        unit_pv: money(sold.unit_pv),
+        line_total: money(-money(sold.unit_price) * quantity),
+        line_pv: money(-money(sold.unit_pv) * quantity),
+      })),
+    };
+    this.data.orders.push(returnOrder);
+
+    for (const line of resolved) {
+      this.applyStockDelta(line.sold.product_id, line.quantity, 'return', returnOrder.id);
+    }
+
+    if (refundAmount > 0) {
+      original.refunds ||= [];
+      original.refunds.push({
+        id: original.refunds.length + 1,
+        client_uuid: clientUuid || null,
+        amount: refundAmount,
+        method: refundMethod,
+        reason,
+        return_order_id: returnOrder.id,
+        refunded_at: now,
+      });
+      original.refunded_amount = money(money(original.refunded_amount) + refundAmount);
+    }
+    original.updated_at = now;
+    original.rev = this.nextRev();
+
+    this.adjustCustomerTotals(original.customer_id, {
+      orders: 0,
+      spent: -refundAmount,
+      pv: -returnPv,
+    });
+    this.audit('return_created', 'order', original.id, `${orderNumberValue} · ${refundAmount} refunded · ${reason || 'no reason'}`);
+    this.save();
+    return { order: this.mapOrder(returnOrder), original: this.mapOrder(original), duplicate: false };
   }
 
   markPaid(orderId) {
     const order = this.orderRow(orderId);
     if (!order) throw new ApiError('Order not found', 404, 'not_found');
-    if (String(order.status) === 'PAID') return this.mapOrder(order);
-    order.status = 'PAID';
+    this.normalizeOrderPayments(order);
+    const balance = this.orderBalance(order);
+    if (balance.due > 0) {
+      this.data.meta.counters.payment += 1;
+      order.payments.push({
+        id: this.data.meta.counters.payment,
+        client_uuid: null,
+        amount: balance.due,
+        method: 'CASH',
+        reference: 'Marked paid by staff',
+        note: null,
+        paid_at: nowIso(),
+      });
+      order.amount_paid = money(order.amount_paid + balance.due);
+    }
+    order.due_amount = 0;
+    order.change_amount = money(Math.max(0, money(order.amount_paid) - money(order.total_amount)));
+    order.payment_status = 'PAID';
+    if (String(order.status) !== 'CANCELLED') order.status = 'PAID';
     order.updated_at = nowIso();
     order.rev = this.nextRev();
-    this.audit('status_changed', 'order', order.id, `${order.status} · payment confirmed`);
+    this.audit('status_changed', 'order', order.id, 'payment confirmed');
     this.save();
     return this.mapOrder(order);
   }
@@ -995,11 +1727,13 @@ export class Database {
   updateOrderStatus(id, status) {
     const order = this.orderRow(id);
     if (!order) throw new ApiError('Order not found', 404, 'not_found');
+    if (order.type === 'RETURN') throw new ApiError('A return is already final', 422, 'invalid_order');
     const allowed = ['PENDING', 'CONFIRMED', 'PACKED', 'DISPATCHED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'PAID', 'CANCELLED'];
     const next = String(status || '').toUpperCase();
     if (!allowed.includes(next)) {
       throw new ApiError(`status must be one of: ${allowed.join(', ')}`, 422, 'validation_error');
     }
+    if (next === 'PAID') return this.markPaid(id);
     if (order.status === next) return this.mapOrder(order);
 
     const previousStatus = order.status;
@@ -1220,7 +1954,10 @@ export class Database {
 
   // ── Sync & service ────────────────────────────────────────────────────────
 
-  sync(since, isAdmin) {
+  sync(since, options = {}) {
+    const opts = typeof options === 'boolean' ? { isAdmin: options } : (options || {});
+    const isAdmin = Boolean(opts.isAdmin);
+    const isStaff = isAdmin || Boolean(opts.isStaff);
     const serverRev = this.currentRev();
     const products = this.data.products
       .filter((product) => int(product.rev, 0) > since)
@@ -1228,30 +1965,51 @@ export class Database {
 
     let orders = [];
     let customers = [];
+    let expenses = [];
+    let staff = [];
+    let audit = [];
     let settings = null;
-    if (isAdmin) {
-      orders = this.data.orders
+    let truncated = false;
+    if (isStaff) {
+      const changedOrders = this.data.orders
         .filter((order) => int(order.rev, 0) > since)
-        .sort((a, b) => int(a.rev) - int(b.rev))
-        .slice(0, 500)
-        .map((order) => this.mapOrder(order));
+        .sort((a, b) => int(a.rev) - int(b.rev));
+      truncated = changedOrders.length > 500;
+      orders = changedOrders.slice(0, 500).map((order) => this.mapOrder(order));
       customers = this.data.customers
         .filter((customer) => int(customer.rev, 0) > since)
         .map((customer) => this.mapCustomer(customer));
+      expenses = this.data.expenses
+        .filter((row) => int(row.rev, 0) > since)
+        .map((row) => this.mapExpense(row));
       if (this.settingsRev() > since) {
-        settings = { ...this.settings(), ...this.publicSettings() };
+        settings = isAdmin
+          ? { ...this.settings(), ...this.publicSettings() }
+          : this.publicSettings();
       }
+    }
+    if (isAdmin) {
+      staff = this.data.staff
+        .filter((row) => int(row.rev, 0) > since)
+        .map((row) => this.mapStaff(row));
+      audit = since > 0
+        ? this.data.audit.filter((row) => int(row.id, 0) > since).slice(-300)
+        : this.data.audit.slice(-300);
     }
 
     return {
       server_rev: serverRev,
       since,
-      scope: isAdmin ? 'admin' : 'public',
+      scope: isAdmin ? 'admin' : (isStaff ? 'staff' : 'public'),
       products,
       orders,
       customers,
+      expenses,
+      staff,
+      audit,
       settings,
-      truncated: false,
+      truncated,
+      next_since: truncated ? int(orders.at(-1)?.rev, since) : serverRev,
       server_time: nowIso(),
     };
   }
@@ -1259,7 +2017,7 @@ export class Database {
   health() {
     return {
       status: 'ok',
-      version: '3.1.2',
+      version: APP_VERSION,
       driver: 'json',
       installed: true,
       server_time: nowIso(),
@@ -1272,6 +2030,9 @@ export class Database {
           products: this.data.products.length,
           orders: this.data.orders.length,
           customers: this.data.customers.length,
+          expenses: this.data.expenses.length,
+          staff: this.data.staff.length,
+          payments: this.data.orders.reduce((sum, order) => sum + (order.payments?.length || 0), 0),
         },
       },
       server_rev: this.currentRev(),
@@ -1281,7 +2042,7 @@ export class Database {
   config() {
     return {
       branch: this.publicSettings(),
-      version: '3.1.2',
+      version: APP_VERSION,
       features: {
         public_orders: this.setting('allow_public_orders', '1') === '1',
         sync: true,

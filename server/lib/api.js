@@ -3,11 +3,18 @@
  * speaks the Stockpoint v1 contract.
  */
 
-import { ApiError, clean, int, money, nowIso, safeEqual } from './util.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { ApiError, bool, clean, int, money, nowIso, safeEqual } from './util.js';
 import { createCourier } from './courier.js';
 import { clientIp, corsHeaders, requestId as newRequestId, securityHeaders } from './security.js';
 
 const MAX_BODY = 2 * 1024 * 1024;
+
+/** Rank order used by every staff-only route. Customers stay at zero. */
+const ROLE_RANK = { VIEWER: 1, CASHIER: 2, MANAGER: 3, ADMIN: 4 };
+const ROLE_LABELS = {
+  1: 'viewers', 2: 'cashiers', 3: 'managers', 4: 'administrators',
+};
 
 function send(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -80,18 +87,60 @@ function bearer(req) {
 
 function requestAuth(req, url, db) {
   const token = bearer(req) || clean(req.headers['x-api-key'], 200) || clean(url.searchParams.get('api_key'), 200);
-  if (!token) return { isAdmin: false, isCustomer: false, customerId: null, token: '' };
-  if (db.isAdminKey(token)) return { isAdmin: true, isCustomer: false, customerId: null, token, viaKey: true };
-  const session = db.verifyToken(token);
-  if (!session) return { isAdmin: false, isCustomer: false, customerId: null, token, viaKey: false };
-  if (session.role === 'customer') {
-    return { isAdmin: false, isCustomer: true, customerId: int(session.customer_id), token, viaKey: false };
+  if (!token) {
+    return { isAdmin: false, isStaff: false, isCustomer: false, role: '', rank: 0, customerId: null, token: '' };
   }
-  return { isAdmin: Boolean(session), isCustomer: false, customerId: null, token, viaKey: false };
+  if (db.isAdminKey(token)) {
+    return {
+      isAdmin: true, isStaff: true, isCustomer: false, role: 'ADMIN', rank: 4,
+      customerId: null, token, viaKey: true,
+    };
+  }
+  const session = db.verifyToken(token);
+  if (!session) {
+    return { isAdmin: false, isStaff: false, isCustomer: false, role: '', rank: 0, token, viaKey: false };
+  }
+  if (String(session.role).toLowerCase() === 'customer') {
+    return {
+      isAdmin: false, isStaff: false, isCustomer: true, role: 'CUSTOMER', rank: 0,
+      customerId: int(session.customer_id), token, viaKey: false,
+    };
+  }
+  const role = String(session.role || 'CASHIER').toUpperCase();
+  const rank = ROLE_RANK[role] || 0;
+  return {
+    isAdmin: rank >= 4, isStaff: rank >= 1, isCustomer: false, role, rank,
+    staffId: int(session.staff_id), customerId: null, token, viaKey: false,
+  };
+}
+
+/** 401 means no staff identity; 403 means a real identity with too few rights. */
+function requireRank(auth, minimum, action = 'do that') {
+  const rank = Math.max(int(auth?.rank, 0), auth?.isAdmin ? 4 : 0);
+  if (!rank) throw new ApiError('Sign in with your shop PIN or staff PIN to do that', 401, 'unauthorized');
+  if (rank < minimum) {
+    throw new ApiError(
+      `Your role cannot ${action}. Ask the owner for ${ROLE_LABELS[minimum] || 'a higher role'} access.`,
+      403,
+      'forbidden',
+    );
+  }
 }
 
 function requireAdmin(auth) {
-  if (!auth.isAdmin) throw new ApiError('Sign in with the shop PIN to do that', 401, 'unauthorized');
+  requireRank(auth, 4, 'change shop security settings');
+}
+
+/** Who to blame in the audit log for a request made with these credentials. */
+function auditActor(auth, db) {
+  if (auth.viaKey) return { actor: 'api-key', role: 'ADMIN' };
+  if (auth.staffId) {
+    const staff = db.listStaff().find((row) => int(row.id) === int(auth.staffId));
+    if (staff) return { actor: staff.name, role: staff.role };
+  }
+  if (auth.isCustomer) return { actor: `customer:${auth.customerId}`, role: 'CUSTOMER' };
+  if (auth.role) return { actor: auth.role, role: auth.role };
+  return { actor: 'system', role: 'SYSTEM' };
 }
 
 function receiptText(db, order) {
@@ -130,6 +179,8 @@ export function createApi({ db, options = {} }) {
   const limiter = options.rateLimiter || null;
   const trustProxy = options.trustProxy === true;
   const courier = createCourier(db);
+  const auditStore = new AsyncLocalStorage();
+  db.setAuditContextProvider(() => auditStore.getStore() || null);
   const loginAttempts = new Map();
   const LOGIN_LIMIT = 10;
   const LOGIN_WINDOW_MS = 15 * 60 * 1000;
@@ -162,6 +213,7 @@ export function createApi({ db, options = {} }) {
 
     const path = url.pathname.replace(/\/+$/, '') || '/api/v1';
 
+    return auditStore.run({ actor: 'system', role: 'SYSTEM' }, async () => {
     try {
       const origin = req.headers.origin;
       if (origin && !cors['Access-Control-Allow-Origin'] && req.method !== 'GET' && req.method !== 'HEAD') {
@@ -182,6 +234,7 @@ export function createApi({ db, options = {} }) {
       }
 
       const auth = requestAuth(req, url, db);
+      db.setAuditContext(auditActor(auth, db));
       const body = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readBody(req) : {};
 
       // ── Service ───────────────────────────────────────────────────────────
@@ -196,8 +249,11 @@ export function createApi({ db, options = {} }) {
       if (req.method === 'GET' && path === '/api/v1') {
         ok(res, {
           name: 'Mohammadpur Stock Point API',
-          version: '3.1.2',
-          endpoints: ['/health', '/config', '/products', '/orders', '/sync', '/dashboard', '/reports/sales'],
+          version: '3.2.0',
+          endpoints: [
+            '/health', '/config', '/products', '/orders', '/payments', '/returns',
+            '/expenses', '/staff', '/audit', '/sync', '/dashboard', '/reports/sales',
+          ],
         });
         return;
       }
@@ -227,8 +283,12 @@ export function createApi({ db, options = {} }) {
           ok(res, { role: 'customer', scope: 'customer', customer: info ? info.customer : null });
           return;
         }
-        requireAdmin(auth);
-        ok(res, { role: 'admin', scope: 'admin' });
+        requireRank(auth, 1, 'view shop data');
+        ok(res, {
+          role: auth.role,
+          scope: auth.rank >= 4 ? 'admin' : (auth.isStaff ? 'staff' : 'public'),
+          staff_id: auth.staffId || 0,
+        });
         return;
       }
       if (req.method === 'POST' && path === '/api/v1/auth/pin') {
@@ -286,7 +346,7 @@ export function createApi({ db, options = {} }) {
 
       // ── Catalogue ─────────────────────────────────────────────────────────
       if (req.method === 'GET' && path === '/api/v1/products') {
-        const includeInactive = url.searchParams.get('include_inactive') === '1' && auth.isAdmin;
+        const includeInactive = url.searchParams.get('include_inactive') === '1' && auth.isStaff;
         const products = db.products(includeInactive);
         ok(res, {
           products,
@@ -296,7 +356,7 @@ export function createApi({ db, options = {} }) {
         return;
       }
       if (req.method === 'POST' && path === '/api/v1/products') {
-        requireAdmin(auth);
+        requireRank(auth, 3, 'add products');
         const product = db.createProduct(body);
         ok(res, { message: 'Product created', product }, 201);
         return;
@@ -311,7 +371,7 @@ export function createApi({ db, options = {} }) {
           ok(res, { product });
           return;
         }
-        requireAdmin(auth);
+        requireRank(auth, 3, 'edit products');
         if (req.method === 'PUT' || req.method === 'PATCH') {
           const product = db.updateProduct(id, body);
           ok(res, { message: 'Product updated', product });
@@ -326,7 +386,7 @@ export function createApi({ db, options = {} }) {
 
       const restoreMatch = path.match(/^\/api\/v1\/products\/(\d+)\/restore$/);
       if (restoreMatch && req.method === 'POST') {
-        requireAdmin(auth);
+        requireRank(auth, 3, 'restore products');
         const product = db.restoreProduct(int(restoreMatch[1]));
         ok(res, { message: 'Product restored', product });
         return;
@@ -334,7 +394,7 @@ export function createApi({ db, options = {} }) {
 
       // ── Stock ─────────────────────────────────────────────────────────────
       if (req.method === 'POST' && path === '/api/v1/stock/update') {
-        requireAdmin(auth);
+        requireRank(auth, 3, 'set stock levels');
         const productId = int(body.productId ?? body.product_id);
         const newQuantity = int(body.newQuantity ?? body.new_quantity, -1);
         if (productId <= 0 || newQuantity < 0) {
@@ -350,7 +410,7 @@ export function createApi({ db, options = {} }) {
         return;
       }
       if (req.method === 'POST' && path === '/api/v1/stock/adjust') {
-        requireAdmin(auth);
+        requireRank(auth, 3, 'adjust stock');
         const productId = int(body.productId ?? body.product_id);
         const delta = int(body.delta ?? body.change);
         if (productId <= 0 || delta === 0) {
@@ -363,17 +423,18 @@ export function createApi({ db, options = {} }) {
         return;
       }
       if (req.method === 'GET' && path === '/api/v1/stock/movements') {
-        requireAdmin(auth);
+        requireRank(auth, 1, 'view stock movements');
         ok(res, { movements: db.movements(url.searchParams.get('limit') || 100) });
         return;
       }
 
       // ── Orders ────────────────────────────────────────────────────────────
       if (req.method === 'GET' && path === '/api/v1/orders') {
-        requireAdmin(auth);
+        requireRank(auth, 1, 'view orders');
         const orders = db.orders({
           limit: url.searchParams.get('limit') || 100,
           status: clean(url.searchParams.get('status'), 24),
+          type: clean(url.searchParams.get('type'), 16).toUpperCase(),
           q: clean(url.searchParams.get('q'), 120),
           from: clean(url.searchParams.get('from'), 12),
           to: clean(url.searchParams.get('to'), 12),
@@ -382,14 +443,17 @@ export function createApi({ db, options = {} }) {
         return;
       }
       if (req.method === 'POST' && path === '/api/v1/orders') {
-        const result = db.createOrder(body, { isAdmin: auth.isAdmin, customerId: auth.customerId });
+        // Customers may order when enabled, but only staff may force oversell.
+        const privileged = auth.rank >= 1;
+        const payload = { ...body, allow_oversell: privileged && bool(body.allow_oversell) === 1 };
+        const result = db.createOrder(payload, { isStaff: privileged, customerId: auth.customerId });
         ok(res, { order: result.order, duplicate: result.duplicate }, result.duplicate ? 200 : 201);
         return;
       }
 
       const orderMatch = path.match(/^\/api\/v1\/orders\/(\d+)$/);
       if (orderMatch && req.method === 'GET') {
-        requireAdmin(auth);
+        requireRank(auth, 1, 'view orders');
         const order = db.order(int(orderMatch[1]));
         if (!order) throw new ApiError('Order not found', 404, 'not_found');
         ok(res, { order });
@@ -398,7 +462,7 @@ export function createApi({ db, options = {} }) {
 
       const statusMatch = path.match(/^\/api\/v1\/orders\/(\d+)\/status$/);
       if (statusMatch && req.method === 'POST') {
-        requireAdmin(auth);
+        requireRank(auth, 2, 'change order status');
         const order = db.updateOrderStatus(int(statusMatch[1]), body.status);
         ok(res, { message: 'Order status updated', order });
         return;
@@ -406,31 +470,77 @@ export function createApi({ db, options = {} }) {
 
       const markPaidMatch = path.match(/^\/api\/v1\/orders\/(\d+)\/mark-paid$/);
       if (markPaidMatch && req.method === 'POST') {
-        requireAdmin(auth);
+        requireRank(auth, 2, 'confirm payments');
         const order = db.markPaid(int(markPaidMatch[1]));
         ok(res, { message: 'Payment confirmed', order });
         return;
       }
 
+      const paymentMatch = path.match(/^\/api\/v1\/orders\/(\d+)\/payments$/);
+      if (paymentMatch && req.method === 'POST') {
+        requireRank(auth, 2, 'record payments');
+        const result = db.recordPayment(int(paymentMatch[1]), body);
+        ok(res, { ...result, message: result.duplicate ? 'Payment already recorded' : 'Payment recorded' });
+        return;
+      }
+
+      const returnMatch = path.match(/^\/api\/v1\/orders\/(\d+)\/returns$/);
+      if (returnMatch && req.method === 'POST') {
+        requireRank(auth, 2, 'process returns');
+        const result = db.createReturn(int(returnMatch[1]), body);
+        ok(res, { ...result, message: result.duplicate ? 'Return already recorded' : 'Return recorded' });
+        return;
+      }
+
+      const timelineMatch = path.match(/^\/api\/v1\/orders\/(\d+)\/timeline$/);
+      if (timelineMatch && req.method === 'GET') {
+        requireRank(auth, 1, 'view order history');
+        ok(res, { timeline: db.orderTimeline(int(timelineMatch[1])) });
+        return;
+      }
+
       const receiptMatch = path.match(/^\/api\/v1\/orders\/(\d+)\/receipt$/);
       if (receiptMatch && req.method === 'GET') {
-        requireAdmin(auth);
+        requireRank(auth, 1, 'print receipts');
         const order = db.order(int(receiptMatch[1]));
         if (!order) throw new ApiError('Order not found', 404, 'not_found');
         ok(res, { receipt: receiptText(db, order), order });
         return;
       }
 
+      // ── Money movement ledgers ───────────────────────────────────────────
+      if (req.method === 'GET' && path === '/api/v1/payments') {
+        requireRank(auth, 1, 'view payments');
+        ok(res, db.paymentLedger(clean(url.searchParams.get('from'), 12), clean(url.searchParams.get('to'), 12)));
+        return;
+      }
+      if (req.method === 'GET' && path === '/api/v1/returns') {
+        requireRank(auth, 1, 'view returns');
+        ok(res, { returns: db.orders({ limit: 500, type: 'RETURN' }) });
+        return;
+      }
+      if (req.method === 'GET' && path === '/api/v1/expenses') {
+        requireRank(auth, 1, 'view expenses');
+        ok(res, { expenses: db.listExpenses(url.searchParams.get('limit') || 300) });
+        return;
+      }
+      if (req.method === 'POST' && path === '/api/v1/expenses') {
+        requireRank(auth, 2, 'record expenses');
+        const result = db.createExpense(body);
+        ok(res, { ...result, message: result.duplicate ? 'Expense already recorded' : 'Expense recorded' });
+        return;
+      }
+
       // ── Customers ─────────────────────────────────────────────────────────
       if (req.method === 'GET' && path === '/api/v1/customers') {
-        requireAdmin(auth);
+        requireRank(auth, 1, 'view customers');
         const customers = db.customers(clean(url.searchParams.get('q'), 120));
         ok(res, { customers, count: customers.length });
         return;
       }
       const customerMatch = path.match(/^\/api\/v1\/customers\/(\d+)$/);
       if (customerMatch && req.method === 'GET') {
-        requireAdmin(auth);
+        requireRank(auth, 1, 'view customers');
         const customer = db.customer(int(customerMatch[1]));
         if (!customer) throw new ApiError('Customer not found', 404, 'not_found');
         const orders = db.orders({ limit: 500 }).filter((order) => int(order.customer_id) === customer.id);
@@ -440,12 +550,12 @@ export function createApi({ db, options = {} }) {
 
       // ── Reports ───────────────────────────────────────────────────────────
       if (req.method === 'GET' && path === '/api/v1/dashboard') {
-        requireAdmin(auth);
+        requireRank(auth, 1, 'view the dashboard');
         ok(res, { data: db.dashboard() });
         return;
       }
       if (req.method === 'GET' && path === '/api/v1/reports/sales') {
-        requireAdmin(auth);
+        requireRank(auth, 1, 'view reports');
         ok(res, db.salesReport(
           clean(url.searchParams.get('from'), 12),
           clean(url.searchParams.get('to'), 12),
@@ -455,59 +565,103 @@ export function createApi({ db, options = {} }) {
 
       // ── Settings ──────────────────────────────────────────────────────────
       if (req.method === 'GET' && path === '/api/v1/settings') {
-        if (!auth.isAdmin) {
-          ok(res, { settings: db.publicSettings() });
+        if (auth.rank < 3) {
+          ok(res, { settings: db.publicSettings(), scope: 'public' });
           return;
         }
         ok(res, {
           settings: { ...db.settings(), ...db.publicSettings() },
           public: db.publicSettings(),
+          scope: auth.rank >= 4 ? 'admin' : 'manager',
           rev: db.currentRev(),
         });
         return;
       }
       if ((req.method === 'PUT' || req.method === 'PATCH') && path === '/api/v1/settings') {
-        requireAdmin(auth);
+        requireRank(auth, 3, 'change shop settings');
         const result = db.saveSettings(body);
         ok(res, { message: 'Settings saved', ...result });
+        return;
+      }
+
+      // ── Staff, audit & versioned rollback ────────────────────────────────
+      if (req.method === 'GET' && path === '/api/v1/staff') {
+        requireRank(auth, 1, 'view staff');
+        ok(res, { staff: db.listStaff() });
+        return;
+      }
+      if (req.method === 'POST' && path === '/api/v1/staff') {
+        requireAdmin(auth);
+        const staff = db.createStaff(body);
+        ok(res, { message: 'Staff member added', staff }, 201);
+        return;
+      }
+      const staffMatch = path.match(/^\/api\/v1\/staff\/(\d+)$/);
+      if (staffMatch && (req.method === 'PUT' || req.method === 'PATCH')) {
+        requireAdmin(auth);
+        const staff = db.updateStaff(int(staffMatch[1]), body);
+        ok(res, { message: 'Staff member updated', staff });
+        return;
+      }
+      if (staffMatch && req.method === 'DELETE') {
+        requireAdmin(auth);
+        db.deleteStaff(int(staffMatch[1]));
+        ok(res, { message: 'Staff member removed' });
+        return;
+      }
+      if (req.method === 'GET' && path === '/api/v1/audit') {
+        requireRank(auth, 1, 'view the audit log');
+        ok(res, { entries: db.auditLog(url.searchParams.get('limit') || 200) });
+        return;
+      }
+      if (req.method === 'GET' && path === '/api/v1/database/snapshots') {
+        requireAdmin(auth);
+        ok(res, { snapshots: db.snapshots() });
+        return;
+      }
+      if (req.method === 'POST' && path === '/api/v1/database/rollback') {
+        requireAdmin(auth);
+        const result = db.rollback(body.snapshot);
+        ok(res, { message: `Restored ${result.snapshot}`, ...result });
         return;
       }
 
       // ── Sync ──────────────────────────────────────────────────────────────
       if (req.method === 'GET' && path === '/api/v1/sync') {
         const since = Math.max(0, int(url.searchParams.get('since')));
-        ok(res, db.sync(since, auth.isAdmin));
+        ok(res, db.sync(since, { isAdmin: auth.rank >= 4, isStaff: auth.rank >= 1 }));
         return;
       }
       if (req.method === 'GET' && path === '/api/v1/sync/status') {
         ok(res, {
           server_rev: db.currentRev(),
           server_time: nowIso(),
-          scope: auth.isAdmin ? 'admin' : 'public',
+          scope: auth.rank >= 4 ? 'admin' : (auth.rank >= 1 ? 'staff' : 'public'),
         });
         return;
       }
 
       // ── Courier ───────────────────────────────────────────────────────────
       if (path === '/api/v1/courier/settings') {
-        requireAdmin(auth);
         if (req.method === 'GET') {
+          requireRank(auth, 3, 'view courier settings');
           ok(res, { settings: courier.settings() });
           return;
         }
         if (req.method === 'PUT' || req.method === 'PATCH') {
+          requireAdmin(auth);
           courier.saveSettings(body);
           ok(res, { message: 'SteadFast settings saved', configured: courier.settings().configured });
           return;
         }
       }
       if (req.method === 'GET' && path === '/api/v1/courier/balance') {
-        requireAdmin(auth);
+        requireRank(auth, 1, 'view courier balance');
         ok(res, { balance: await courier.balance() });
         return;
       }
       if (req.method === 'GET' && path === '/api/v1/courier/returns') {
-        requireAdmin(auth);
+        requireRank(auth, 1, 'view courier returns');
         ok(res, { returns: await courier.returns() });
         return;
       }
@@ -548,7 +702,7 @@ export function createApi({ db, options = {} }) {
 
       const shipMatch = path.match(/^\/api\/v1\/courier\/ship\/(\d+)$/);
       if (shipMatch && req.method === 'POST') {
-        requireAdmin(auth);
+        requireRank(auth, 2, 'ship orders');
         const id = int(shipMatch[1]);
         const order = db.order(id);
         const row = db.orderRow(id);
@@ -608,7 +762,7 @@ export function createApi({ db, options = {} }) {
 
       const courierStatusMatch = path.match(/^\/api\/v1\/courier\/status\/(\d+)$/);
       if (courierStatusMatch && req.method === 'GET') {
-        requireAdmin(auth);
+        requireRank(auth, 2, 'refresh shipments');
         const id = int(courierStatusMatch[1]);
         const row = db.orderRow(id);
         if (!row) throw new ApiError('Order not found', 404, 'not_found');
@@ -636,7 +790,7 @@ export function createApi({ db, options = {} }) {
 
       const courierReturnMatch = path.match(/^\/api\/v1\/courier\/return\/(\d+)$/);
       if (courierReturnMatch && req.method === 'POST') {
-        requireAdmin(auth);
+        requireRank(auth, 2, 'request courier returns');
         const id = int(courierReturnMatch[1]);
         const order = db.order(id);
         if (!order) throw new ApiError('Order not found', 404, 'not_found');
@@ -667,5 +821,6 @@ export function createApi({ db, options = {} }) {
     } catch (error) {
       fail(res, error);
     }
+    });
   };
 }

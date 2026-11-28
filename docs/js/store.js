@@ -8,6 +8,14 @@
 
 import api, { ApiError, getBase, hasBase, getToken, getTokenMeta, isTokenExpired, setToken } from './api.js';
 import { num, round2, uuid, sortBy } from './util.js';
+import {
+  openDB, dbInfo, dbGetAll, dbPutMany, dbPut, dbDelete, writeMeta, readMeta,
+  migrateLegacyLocalStorage, appendAudit, takeSnapshot, exportDatabase, importDatabase,
+  clearDatabase, listSnapshots, restoreSnapshot, planMigrations, readAuditMirror,
+  listAudit, DB_VERSION,
+} from './db.js';
+import { normalizePayments, orderBalance, paymentStatus } from './payments.js';
+import { ROLES, can as roleCan, authenticateLocal, localStaff, setLocalPin } from './roles.js';
 
 const CACHE_KEY = 'dxn.cache.v2';
 const CART_KEY = 'dxn.cart.v2';
@@ -15,6 +23,8 @@ const OUTBOX_KEY = 'dxn.outbox.v2';
 const SESSION_KEY = 'dxn.session.v2';
 const HELD_KEY = 'dxn.held.v3';
 const THEME_KEY = 'dxn.theme.v3';
+const ROLE_KEY = 'dxn.role.v1';
+const CONFLICTS_KEY = 'dxn.conflicts.v1';
 
 const POLL_MS = 15000;
 const MAX_ORDERS = 400;
@@ -277,16 +287,30 @@ export const state = {
   customer: null,
   health: null,
   connected: false,
+  // Enterprise additions
+  role: 'VIEWER',
+  staff: [],
+  remoteStaff: [],
+  conflicts: [],
+  db: { available: false, version: 0, migrated: [], ready: false, error: '' },
+  audit: [],
+  checkout: { busy: false, id: '' },
+  recentSkus: [],
+  expenses: [],
 };
 
 function emptySale() {
   return {
+    customer_id: null,
     customer_name: '',
     customer_phone: '',
     dxn_member_id: '',
     payment_method: 'CASH',
+    payments: [],
     discount: 0,
     note: '',
+    client_uuid: '',
+    allow_credit: false,
   };
 }
 
@@ -311,14 +335,45 @@ function write(key, value) {
 }
 
 export function persistCache() {
-  write(CACHE_KEY, {
+  const payload = {
     rev: state.rev,
     products: state.products,
     orders: state.orders,
     customers: state.customers,
+    expenses: state.expenses,
+    conflicts: state.conflicts,
     settings: state.settings,
     savedAt: Date.now(),
-  });
+  };
+  write(CACHE_KEY, payload);
+  mirrorCache(payload);
+}
+
+/**
+ * Durable mirror. localStorage keeps the first paint instant; IndexedDB is the
+ * transactional store of record. Writes are coalesced so a 200-line order does
+ * not open 200 transactions.
+ */
+let mirrorTimer = 0;
+let mirrorQueued = false;
+function mirrorCache(payload) {
+  if (!state.db.available) return;
+  if (mirrorQueued) return;
+  mirrorQueued = true;
+  clearTimeout(mirrorTimer);
+  mirrorTimer = setTimeout(async () => {
+    mirrorQueued = false;
+    try {
+      await dbPutMany('products', payload.products);
+      await dbPutMany('orders', payload.orders);
+      await dbPutMany('customers', payload.customers);
+      await dbPutMany('expenses', payload.expenses || []);
+      await dbPutMany('conflicts', (payload.conflicts || []).map((row) => ({ ...row, id: row.id || row.key })));
+      await writeMeta('cache', { rev: payload.rev, savedAt: payload.savedAt, settings: payload.settings });
+    } catch (error) {
+      state.db.error = error.message;
+    }
+  }, 80);
 }
 
 export function persistCart() {
@@ -327,10 +382,32 @@ export function persistCart() {
 
 export function persistOutbox() {
   write(OUTBOX_KEY, state.outbox);
+  if (state.db.available) {
+    // Rewrite the durable outbox so a crash between writes cannot leave a
+    // ghost queue entry. The queue is small (it drains on sync).
+    (async () => {
+      try {
+        const existing = await dbGetAll('outbox');
+        const keep = new Set(state.outbox.map((item) => item.id));
+        for (const row of existing) if (!keep.has(row.id)) await dbDelete('outbox', row.id);
+        await dbPutMany('outbox', state.outbox);
+      } catch { /* the localStorage mirror still holds it */ }
+    })();
+  }
 }
 
 export function persistHeld() {
   write(HELD_KEY, state.held);
+  if (state.db.available) {
+    (async () => {
+      try {
+        const existing = await dbGetAll('held');
+        const keep = new Set(state.held.map((item) => item.id));
+        for (const row of existing) if (!keep.has(row.id)) await dbDelete('held', row.id);
+        await dbPutMany('held', state.held);
+      } catch { /* ignore */ }
+    })();
+  }
 }
 
 export function setTheme(theme) {
@@ -428,6 +505,8 @@ export function hydrate() {
     state.products = Array.isArray(cache.products) ? cache.products : [];
     state.orders = Array.isArray(cache.orders) ? cache.orders : [];
     state.customers = Array.isArray(cache.customers) ? cache.customers : [];
+    state.expenses = Array.isArray(cache.expenses) ? cache.expenses : [];
+    state.conflicts = Array.isArray(cache.conflicts) ? cache.conflicts : read(CONFLICTS_KEY, []);
     state.settings = withDefaults(cache.settings);
     state.lastSyncAt = num(cache.savedAt);
   }
@@ -456,15 +535,151 @@ export function hydrate() {
   if (!state.isAdmin && session?.isAdmin) write(SESSION_KEY, { isAdmin: false, isCustomer: state.isCustomer });
   if (!state.isCustomer && session?.isCustomer) write(SESSION_KEY, { isAdmin: state.isAdmin, isCustomer: false });
 
+  state.staff = localStaff();
+  state.audit = readAuditMirror(200);
+  if (!state.conflicts.length) state.conflicts = read(CONFLICTS_KEY, []);
+  try {
+    const savedRole = localStorage.getItem(ROLE_KEY);
+    if (savedRole && ROLES[savedRole] && state.isAdmin) state.role = savedRole;
+    else if (session?.role && ROLES[session.role] && state.isAdmin) state.role = session.role;
+    else state.role = state.isAdmin ? ROLES.ADMIN : ROLES.VIEWER;
+  } catch {
+    state.role = state.isAdmin ? ROLES.ADMIN : ROLES.VIEWER;
+  }
   state.syncState = hasBase() ? 'idle' : 'local';
   state.ready = true;
   return state;
 }
 
+/**
+ * Opens the durable database, imports the pre-IndexedDB cache once and then
+ * adopts whatever is newer. Never blocks first paint: callers render from the
+ * localStorage mirror immediately, and this resolves a moment later.
+ */
+export async function initDurable() {
+  try {
+    await openDB();
+    const info = dbInfo();
+    state.db = { ...info, ready: true };
+    const legacy = await migrateLegacyLocalStorage({
+      cache: CACHE_KEY, outbox: OUTBOX_KEY, held: HELD_KEY, cart: CART_KEY,
+    });
+
+    const [products, orders, customers, outbox, held, expenses, conflicts, auditRows, meta] = await Promise.all([
+      dbGetAll('products'), dbGetAll('orders'), dbGetAll('customers'),
+      dbGetAll('outbox'), dbGetAll('held'), dbGetAll('expenses'),
+      dbGetAll('conflicts'), listAudit(300), readMeta('cache'),
+    ]);
+
+    if (products.length) state.products = products.map(decorateProduct);
+    if (orders.length) state.orders = orders;
+    if (customers.length) state.customers = customers;
+    if (outbox.length) state.outbox = outbox;
+    if (held.length) state.held = held;
+    if (expenses.length) state.expenses = expenses;
+    if (conflicts.length) state.conflicts = conflicts;
+    if (auditRows.length) state.audit = auditRows;
+    if (meta?.savedAt && meta.savedAt > state.lastSyncAt) {
+      state.rev = Math.max(state.rev, num(meta.rev));
+      if (meta.settings) state.settings = withDefaults(meta.settings);
+      state.lastSyncAt = meta.savedAt;
+    }
+
+    // Merge in any browser-tab writes that happened while the DB was opening.
+    const cache = read(CACHE_KEY, null);
+    if (cache) {
+      mergeProducts(Array.isArray(cache.products) ? cache.products : []);
+      mergeOrders(Array.isArray(cache.orders) ? cache.orders : []);
+      mergeCustomers(Array.isArray(cache.customers) ? cache.customers : []);
+    }
+
+    state.db.ready = true;
+    if (legacy.migrated) {
+      await appendAudit({ actor: 'system', role: 'SYSTEM', action: 'migration.legacy-import', entity: 'database', detail: JSON.stringify(legacy.counts) });
+    }
+    await writeMeta('health', { at: Date.now(), ok: true, version: info.version });
+    persistCache();
+    notify();
+    return { ok: true, ...legacy, version: info.version };
+  } catch (error) {
+    state.db = { available: false, version: 0, migrated: [], ready: false, error: error.message };
+    notify();
+    return { ok: false, error: error.message };
+  }
+}
+
+export async function databaseStatus() {
+  return {
+    ...state.db,
+    plan: planMigrations(state.db.version || 0, DB_VERSION),
+    snapshots: await listSnapshots().catch(() => []),
+  };
+}
+
+export async function backupDatabase() {
+  return exportDatabase();
+}
+
+export async function restoreDatabase(backup) {
+  await takeSnapshot('before-restore');
+  await importDatabase(backup);
+  await initDurable();
+  return true;
+}
+
+export async function snapshotDatabase(label) {
+  return takeSnapshot(label);
+}
+
+export async function rollbackDatabase(id) {
+  await restoreSnapshot(id);
+  await initDurable();
+  return true;
+}
+
+export async function resetDatabase() {
+  await takeSnapshot('before-reset');
+  await clearDatabase();
+  try {
+    for (const key of [CACHE_KEY, CART_KEY, OUTBOX_KEY, HELD_KEY, SESSION_KEY]) localStorage.removeItem(key);
+  } catch { /* ignore */ }
+  state.products = SEED_PRODUCTS.map((p) => decorateProduct({ ...p }));
+  state.orders = [];
+  state.customers = [];
+  state.expenses = [];
+  state.conflicts = [];
+  state.audit = [];
+  state.outbox = [];
+  state.held = [];
+  state.cart = [];
+  state.sale = emptySale();
+  state.rev = 0;
+  persistCache();
+  notify();
+}
+
+export async function audit(action, entity = '', entityId = null, detail = '') {
+  const row = await appendAudit({
+    actor: state.customer?.name || (state.isAdmin ? (state.staff.find((s) => s.role === state.role)?.name || 'Shop owner') : 'Guest'),
+    role: state.role,
+    action, entity, entity_id: entityId, detail,
+  });
+  state.audit.unshift(row);
+  state.audit = state.audit.slice(0, 300);
+  return row;
+}
+
+export function can(action) {
+  return roleCan(state.role, action);
+}
+
 export function setAdmin(flag) {
   state.isAdmin = Boolean(flag);
   if (flag) state.isCustomer = false;
-  write(SESSION_KEY, { isAdmin: state.isAdmin, isCustomer: state.isCustomer });
+  if (!flag) state.role = ROLES.VIEWER;
+  else if (state.role === ROLES.VIEWER) state.role = ROLES.ADMIN;
+  write(SESSION_KEY, { isAdmin: state.isAdmin, isCustomer: state.isCustomer, role: state.role });
+  try { localStorage.setItem(ROLE_KEY, state.role); } catch { /* ignore */ }
   if (!flag && !state.isCustomer) {
     setToken('');
     if (state.settings) {
@@ -476,11 +691,47 @@ export function setAdmin(flag) {
   notify();
 }
 
+export function setRole(role, { admin = true } = {}) {
+  const next = ROLES[String(role || '').toUpperCase()] || ROLES.VIEWER;
+  state.role = next;
+  if (admin) {
+    state.isAdmin = true;
+    state.isCustomer = false;
+  }
+  write(SESSION_KEY, { isAdmin: state.isAdmin, isCustomer: state.isCustomer, role: state.role });
+  try { localStorage.setItem(ROLE_KEY, state.role); } catch { /* ignore */ }
+  notify();
+}
+
+/**
+ * Offline sign-in. When a server is connected the API is the authority, but a
+ * shop with no signal must still be able to open the till: the locally cached
+ * staff PIN verifies against the salted hash and grants the stored role.
+ */
+export async function loginLocal(pin) {
+  const staff = await authenticateLocal(String(pin || '').trim());
+  if (!staff) return { ok: false, message: 'That PIN does not match any active staff member.' };
+  setRole(staff.role);
+  await audit('auth.login', 'staff', staff.id, `Offline sign-in as ${staff.role}`);
+  return { ok: true, staff, role: staff.role };
+}
+
+export async function changeLocalPin(staffId, pin) {
+  const staff = await setLocalPin(staffId, pin);
+  state.staff = localStaff();
+  await audit('auth.pin_changed', 'staff', staff.id, 'PIN changed on this device');
+  notify();
+  return staff;
+}
+
 export function setCustomer(flag, customer = null) {
   state.isCustomer = Boolean(flag);
-  if (flag) state.isAdmin = false;
+  if (flag) {
+    state.isAdmin = false;
+    state.role = ROLES.VIEWER;
+  }
   state.customer = flag ? customer : null;
-  write(SESSION_KEY, { isAdmin: state.isAdmin, isCustomer: state.isCustomer });
+  write(SESSION_KEY, { isAdmin: state.isAdmin, isCustomer: state.isCustomer, role: state.role });
   if (!flag) setToken('');
   notify();
 }
@@ -532,13 +783,17 @@ export function cartLines() {
       if (!product) return null;
       const price = unitPrice(product);
       const pv = num(product.pv_points);
+      const gross = round2(price * line.qty);
+      const discount = round2(Math.min(gross, Math.max(0, num(line.discount))));
       return {
         product,
         productId: product.id,
         qty: line.qty,
         price,
         pv,
-        lineTotal: round2(price * line.qty),
+        discount,
+        lineTotal: round2(gross - discount),
+        lineGross: gross,
         linePv: round2(pv * line.qty),
         available: num(product.stock_qty),
       };
@@ -548,12 +803,73 @@ export function cartLines() {
 
 export function cartTotals() {
   const lines = cartLines();
-  const subtotal = round2(lines.reduce((sum, l) => sum + l.lineTotal, 0));
+  const gross = round2(lines.reduce((sum, l) => sum + l.lineGross, 0));
+  const lineDiscount = round2(lines.reduce((sum, l) => sum + l.discount, 0));
   const pv = round2(lines.reduce((sum, l) => sum + l.linePv, 0));
-  const discount = Math.min(round2(num(state.sale.discount)), subtotal);
-  const total = round2(Math.max(0, subtotal - discount));
+  const orderDiscount = Math.min(round2(num(state.sale.discount)), round2(gross - lineDiscount));
+  const subtotal = round2(gross - lineDiscount);
+  const discount = round2(lineDiscount + Math.max(0, orderDiscount));
+  const total = round2(Math.max(0, subtotal - Math.max(0, orderDiscount)));
   const units = lines.reduce((sum, l) => sum + l.qty, 0);
-  return { lines, subtotal, discount, total, pv, units, count: lines.length };
+
+  const preview = normalizePayments(
+    Array.isArray(state.sale.payments) ? state.sale.payments : [],
+    total,
+    { allowCredit: true },
+  );
+  return {
+    lines,
+    subtotal,
+    gross,
+    discount,
+    orderDiscount,
+    total,
+    pv,
+    units,
+    count: lines.length,
+    paid: preview.paid,
+    due: preview.due,
+    change: preview.change,
+    paymentStatus: preview.status,
+    payments: preview.payments,
+  };
+}
+
+/** Recently sold SKUs, newest first, for the POS quick row. */
+export function recentProducts(limit = 8) {
+  const seen = new Set();
+  const out = [];
+  for (const order of state.orders) {
+    if (order.type === 'RETURN' || order.status === 'CANCELLED') continue;
+    for (const item of order.items || []) {
+      const key = item.product_sku || item.sku;
+      if (!key || seen.has(key)) continue;
+      const product = state.products.find((p) => String(p.sku) === String(key));
+      if (!product || Number(product.is_active ?? 1) !== 1) continue;
+      seen.add(key);
+      out.push(product);
+      if (out.length >= limit) return out;
+    }
+  }
+  return out;
+}
+
+/** Most frequently sold products across the cached history. */
+export function frequentProducts(limit = 8) {
+  const counts = new Map();
+  for (const order of state.orders) {
+    if (order.type === 'RETURN' || order.status === 'CANCELLED') continue;
+    for (const item of order.items || []) {
+      const key = item.product_sku || item.sku;
+      if (!key) continue;
+      counts.set(key, (counts.get(key) || 0) + num(item.quantity));
+    }
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([sku]) => state.products.find((p) => String(p.sku) === String(sku)))
+    .filter((p) => p && Number(p.is_active ?? 1) === 1)
+    .slice(0, limit);
 }
 
 export function cartCount() {
@@ -612,6 +928,17 @@ export function removeFromCart(productId) {
   notify();
 }
 
+/** Per-line discount, capped at the line value. */
+export function setLineDiscount(productId, amount) {
+  const line = state.cart.find((l) => Number(l.productId) === Number(productId));
+  if (!line) return;
+  const product = productById(productId);
+  const gross = round2(unitPrice(product) * line.qty);
+  line.discount = round2(Math.min(gross, Math.max(0, num(amount))));
+  persistCart();
+  notify();
+}
+
 export function clearCart() {
   state.cart = [];
   state.sale = emptySale();
@@ -625,15 +952,76 @@ export function updateSale(patch) {
   notify();
 }
 
+export function setSaleCustomer(customer) {
+  if (!customer) {
+    state.sale.customer_id = null;
+    state.sale.customer_name = '';
+    state.sale.customer_phone = '';
+    state.sale.dxn_member_id = '';
+  } else {
+    state.sale.customer_id = customer.id || null;
+    state.sale.customer_name = customer.name || '';
+    state.sale.customer_phone = customer.phone || '';
+    state.sale.dxn_member_id = customer.dxn_member_id || '';
+  }
+  persistCart();
+  notify();
+}
+
+/** Adds a split payment entry to the current sale. */
+export function addPayment(method, amount, extra = {}) {
+  const entry = {
+    method: String(method || 'CASH').toUpperCase(),
+    amount: round2(Math.max(0, num(amount))),
+    reference: extra.reference || '',
+    note: extra.note || '',
+  };
+  if (!entry.amount) return { ok: false, message: 'Enter an amount first.' };
+  state.sale.payments = [...(state.sale.payments || []), entry];
+  state.sale.payment_method = entry.method;
+  persistCart();
+  notify();
+  return { ok: true, entry };
+}
+
+export function removePayment(index) {
+  state.sale.payments = (state.sale.payments || []).filter((_, i) => i !== index);
+  persistCart();
+  notify();
+}
+
+export function clearPayments() {
+  state.sale.payments = [];
+  persistCart();
+  notify();
+}
+
+/** Stable idempotency key for the current cart. */
+export function checkoutKey() {
+  if (!state.sale.client_uuid) {
+    state.sale.client_uuid = uuid();
+    persistCart();
+  }
+  return state.sale.client_uuid;
+}
+
 export function buildOrderPayload() {
-  const { lines, subtotal, discount, total, pv } = cartTotals();
+  const { lines, subtotal, discount, total, pv, paid, due, change, payments, paymentStatus: status } = cartTotals();
+  const key = checkoutKey();
   return {
-    client_uuid: uuid(),
+    client_uuid: key,
+    customer_id: state.sale.customer_id || (state.isCustomer && state.customer?.id ? state.customer.id : undefined),
     customer_name: (state.sale.customer_name || '').trim() || 'Walk-in customer',
     customer_phone: (state.sale.customer_phone || '').trim(),
-    dxn_member_id: (state.sale.dxn_member_id || '').trim(),
+    dxn_member_id: (state.sale.dxn_member_id || '').trim().toUpperCase(),
     is_member: state.tier === 'member',
-    payment_method: state.sale.payment_method || 'CASH',
+    payment_method: payments.length ? payments[0].method : (state.sale.payment_method || 'CASH'),
+    payments,
+    amount_paid: paid,
+    due_amount: due,
+    change_amount: change,
+    payment_status: status,
+    allow_credit: state.sale.allow_credit ? 1 : 0,
     discount,
     note: (state.sale.note || '').trim(),
     source: 'web',
@@ -643,31 +1031,54 @@ export function buildOrderPayload() {
       quantity: line.qty,
       unit_price: line.price,
       unit_pv: line.pv,
+      discount: line.discount,
     })),
-    customer_id: state.isCustomer && state.customer?.id ? state.customer.id : undefined,
-    _totals: { subtotal, total, pv }, // stripped before it leaves the device
+    _totals: { subtotal, total, pv, paid, due, change, status },
   };
 }
 
 // ── Outbox ──────────────────────────────────────────────────────────────────
 
+/**
+ * Saves the sale locally and queues it. This is the only path to checkout:
+ * there is no direct network call, so a dead connection or a force-close can
+ * never lose a completed sale. Repeated taps return the same queued entry.
+ */
 export function enqueueOrder() {
+  if (state.checkout.busy) return { ok: false, message: 'This sale is already being saved.', duplicate: true };
+  const totals = cartTotals();
+  if (!totals.lines.length) return { ok: false, message: 'The cart is empty.' };
+  const short = totals.lines.find((line) => line.qty > line.available);
+  if (short) return { ok: false, message: `Not enough stock for ${short.product.name} (${short.available} left).` };
+
+  const paymentCheck = normalizePayments(totals.payments, totals.total, {
+    allowCredit: Boolean(state.sale.allow_credit) || Boolean(state.sale.customer_id) || Boolean(state.sale.dxn_member_id),
+  });
+  if (!paymentCheck.ok) return { ok: false, message: paymentCheck.message };
+  if (paymentCheck.due > 0 && !state.sale.customer_id && !state.sale.dxn_member_id && !state.sale.customer_phone) {
+    return { ok: false, message: 'A credit sale needs a customer name and phone or DXN member ID.' };
+  }
+
   const payload = buildOrderPayload();
   if (!payload.items.length) return { ok: false, message: 'The cart is empty.' };
-  const totals = payload._totals;
+  if (state.outbox.some((item) => item.id === payload.client_uuid)) {
+    return { ok: false, message: 'This sale has already been saved.', duplicate: true };
+  }
+  const localTotals = payload._totals;
   delete payload._totals;
 
+  state.checkout = { busy: true, id: payload.client_uuid };
   state.outbox.push({
     id: payload.client_uuid,
+    kind: 'order',
     payload,
-    totals,
+    totals: localTotals,
     createdAt: Date.now(),
     attempts: 0,
     status: 'pending',
     error: '',
   });
   persistOutbox();
-  clearCart();
 
   // Show the sale immediately: local stock only ever goes down optimistically.
   for (const item of payload.items) {
@@ -675,14 +1086,47 @@ export function enqueueOrder() {
     if (product) product.stock_qty = num(product.stock_qty) - item.quantity;
   }
   persistCache();
+  audit('sale.queued', 'order', payload.client_uuid, `${payload.customer_name} - ${localTotals.total} (${localTotals.status})`);
+  clearCart();
+  state.checkout = { busy: false, id: '' };
   notify();
 
   syncNow();
-  return { ok: true, payload };
+  return { ok: true, payload, totals: localTotals, outboxId: payload.client_uuid };
 }
 
 export function dropFromOutbox(id) {
-  state.outbox = state.outbox.filter((item) => item.id !== id);
+  const item = state.outbox.find((o) => o.id === id);
+  if (item) {
+    if (item.kind === 'order') {
+      for (const line of item.payload?.items || []) {
+        const product = productById(line.product_id);
+        if (product) product.stock_qty = num(product.stock_qty) + num(line.quantity);
+      }
+    } else if (item.kind === 'return') {
+      // processReturn restored the shelf optimistically; undo that restore.
+      for (const line of item.payload?.items || []) {
+        const product = productById(line.product_id);
+        if (product) product.stock_qty = num(product.stock_qty) - num(line.quantity);
+      }
+    } else if (item.kind === 'payment') {
+      const order = state.orders.find((o) => Number(o.id) === Number(item.payload?.order_id));
+      if (order) {
+        order.payments = (order.payments || []).filter((p) => p.client_uuid !== item.payload?.client_uuid);
+        const paid = round2((order.payments || []).reduce((sum, p) => sum + Math.max(0, num(p.amount)), 0));
+        const due = round2(Math.max(0, num(order.total_amount) - paid));
+        order.amount_paid = paid;
+        order.due_amount = due;
+        order.payment_status = paymentStatus(paid, order.total_amount);
+        if (due > 0 && order.status === 'PAID') order.status = 'CONFIRMED';
+        mergeOrders([order]);
+      }
+    } else if (item.kind === 'expense') {
+      state.expenses = state.expenses.filter((e) => e.client_uuid !== item.payload?.client_uuid && e.id !== item.payload?.id);
+    }
+    persistCache();
+  }
+  state.outbox = state.outbox.filter((entry) => entry.id !== id);
   persistOutbox();
   notify();
 }
@@ -717,11 +1161,24 @@ async function flushOutbox() {
     if (item.status === 'failed') continue;
     try {
       item.attempts += 1;
-      const result = await api.createOrder(item.payload);
+      if (item.kind === 'payment') {
+        const result = await api.recordPayment(item.payload.order_id, item.payload);
+        if (result?.order) mergeOrders([result.order]);
+      } else if (item.kind === 'return') {
+        const result = await api.createReturn(item.payload.order_id, item.payload);
+        if (result?.order) mergeOrders([result.order]);
+        if (result?.original) mergeOrders([result.original]);
+      } else if (item.kind === 'expense') {
+        const result = await api.createExpense(item.payload);
+        if (result?.expense) {
+          state.expenses = [result.expense, ...state.expenses.filter((e) => e.id !== result.expense.id)];
+        }
+      } else {
+        const result = await api.createOrder(item.payload);
+        if (result?.order) mergeOrders([result.order]);
+      }
       state.outbox = state.outbox.filter((o) => o.id !== item.id);
       sent += 1;
-      if (result?.order) mergeOrders([result.order]);
-      if (result?.duplicate) mergeOrders([result.order]);
     } catch (error) {
       item.error = error.message;
       if (error instanceof ApiError && [400, 403, 404, 409, 422].includes(error.status)) {
@@ -746,12 +1203,268 @@ async function flushOutbox() {
   return sent;
 }
 
+// ── Payments & returns ──────────────────────────────────────────────────────
+
+/**
+ * Records money against an existing order. Offline it is queued; online it is
+ * pushed immediately. The server de-duplicates by payment uuid.
+ */
+export async function recordPayment(orderId, payment) {
+  const order = state.orders.find((o) => Number(o.id) === Number(orderId));
+  if (!order) return { ok: false, message: 'Order not found.' };
+  const amount = round2(Math.max(0, num(payment.amount)));
+  if (!amount) return { ok: false, message: 'Enter an amount greater than zero.' };
+  const balance = orderBalance(order);
+  if (amount > balance.due + 0.009) {
+    return { ok: false, message: `That is more than the ${balance.due.toFixed(2)} still due.` };
+  }
+  const entry = {
+    order_id: Number(orderId),
+    amount,
+    method: String(payment.method || 'CASH').toUpperCase(),
+    reference: payment.reference || '',
+    note: payment.note || '',
+    client_uuid: uuid(),
+    paid_at: new Date().toISOString(),
+  };
+
+  const optimistic = {
+    ...order,
+    amount_paid: round2(balance.paid + amount),
+    due_amount: round2(Math.max(0, balance.due - amount)),
+    payments: [...(order.payments || []), entry],
+  };
+  optimistic.payment_status = paymentStatus(optimistic.amount_paid, optimistic.total_amount);
+  // Payment status and fulfilment status are different axes. Only settle the
+  // order when the balance reaches zero; otherwise leave PACKED/DELIVERED etc.
+  // exactly as they were, mirroring the server's recordPayment behaviour.
+  if (optimistic.due_amount <= 0) optimistic.status = 'PAID';
+  else if (optimistic.status === 'PAID') optimistic.status = 'CONFIRMED';
+  mergeOrders([optimistic]);
+  persistCache();
+
+  if (hasBase()) {
+    try {
+      const result = await api.recordPayment(orderId, entry);
+      if (result?.order) mergeOrders([result.order]);
+      persistCache();
+      audit('payment.recorded', 'order', orderId, `${amount} via ${entry.method}`);
+      notify();
+      return { ok: true, queued: false };
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 0) {
+        mergeOrders([order]);
+        persistCache();
+        return { ok: false, message: error.message };
+      }
+    }
+  }
+
+  state.outbox.push({
+    id: entry.client_uuid, kind: 'payment', payload: entry,
+    createdAt: Date.now(), attempts: 0, status: 'pending', error: '',
+  });
+  persistOutbox();
+  await audit('payment.queued', 'order', orderId, `${amount} via ${entry.method}`);
+  notify();
+  syncNow();
+  return { ok: true, queued: true };
+}
+
+/**
+ * Processes a return as a linked reversal, never by editing the original.
+ * Stock is restored and the customer balance reduced on the server; offline
+ * the whole operation is queued as one atomic outbox entry.
+ */
+export async function processReturn(orderId, { items, reason = '', refundMethod = 'CASH' } = {}) {
+  const order = state.orders.find((o) => Number(o.id) === Number(orderId));
+  if (!order) return { ok: false, message: 'Order not found.' };
+  const requested = (Array.isArray(items) ? items : []).map((item) => ({
+    product_id: Number(item.product_id),
+    quantity: Math.max(0, Math.round(num(item.quantity))),
+  })).filter((item) => item.quantity > 0);
+  if (!requested.length) return { ok: false, message: 'Choose at least one item to return.' };
+
+  const already = new Map();
+  for (const row of state.orders) {
+    if (row.type !== 'RETURN' || Number(row.original_order_id) !== Number(order.id)) continue;
+    for (const item of row.items || []) {
+      const key = Number(item.product_id);
+      already.set(key, (already.get(key) || 0) + Math.abs(num(item.quantity)));
+    }
+  }
+  for (const line of requested) {
+    const sold = (order.items || []).find((i) => Number(i.product_id) === line.product_id);
+    const remaining = sold ? num(sold.quantity) - (already.get(line.product_id) || 0) : 0;
+    if (!sold || line.quantity > remaining) {
+      return { ok: false, message: `Only ${remaining} of ${sold?.name || 'that item'} can still be returned.` };
+    }
+  }
+
+  const payload = {
+    client_uuid: uuid(),
+    items: requested,
+    reason: String(reason || '').slice(0, 300),
+    refund_method: String(refundMethod || 'CASH').toUpperCase(),
+  };
+
+  // Optimistic stock restore so the shelf is sellable again immediately.
+  for (const line of requested) {
+    const product = productById(line.product_id);
+    if (product) product.stock_qty = num(product.stock_qty) + line.quantity;
+  }
+  persistCache();
+  notify();
+
+  if (hasBase()) {
+    try {
+      const result = await api.createReturn(orderId, payload);
+      if (result?.order) mergeOrders([result.order]);
+      if (result?.original) mergeOrders([result.original]);
+      persistCache();
+      await audit('return.created', 'order', orderId, `${requested.length} line(s) - ${reason || 'no reason'}`);
+      notify();
+      return { ok: true, queued: false, order: result?.order };
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 0) {
+        for (const line of requested) {
+          const product = productById(line.product_id);
+          if (product) product.stock_qty = num(product.stock_qty) - line.quantity;
+        }
+        persistCache();
+        notify();
+        return { ok: false, message: error.message };
+      }
+    }
+  }
+
+  state.outbox.push({
+    id: payload.client_uuid, kind: 'return', payload: { ...payload, order_id: Number(orderId) },
+    createdAt: Date.now(), attempts: 0, status: 'pending', error: '',
+  });
+  persistOutbox();
+  await audit('return.queued', 'order', orderId, `${requested.length} line(s)`);
+  syncNow();
+  return { ok: true, queued: true };
+}
+
+/** Records an out-of-pocket business expense, online immediately or queued. */
+export async function addExpense({ category, amount, note = '', spent_at = '' } = {}) {
+  const value = round2(Math.max(0, num(amount)));
+  if (!value) return { ok: false, message: 'Enter an amount greater than zero.' };
+  const entry = {
+    id: `local-${uuid()}`,
+    client_uuid: uuid(),
+    category: String(category || 'Other').trim().slice(0, 60) || 'Other',
+    amount: value,
+    note: String(note || '').trim().slice(0, 300),
+    spent_at: spent_at || new Date().toISOString(),
+  };
+  state.expenses.unshift(entry);
+  persistCache();
+  notify();
+
+  if (hasBase()) {
+    try {
+      const result = await api.createExpense(entry);
+      if (result?.expense) {
+        state.expenses = [result.expense, ...state.expenses.filter((e) => e.id !== entry.id && e.client_uuid !== entry.client_uuid)];
+      }
+      persistCache();
+      await audit('expense.created', 'expense', result?.expense?.id || entry.id, `${value} · ${entry.category}`);
+      notify();
+      return { ok: true, queued: false, expense: result?.expense };
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 0) {
+        state.expenses = state.expenses.filter((e) => e.id !== entry.id);
+        persistCache();
+        notify();
+        return { ok: false, message: error.message };
+      }
+    }
+  }
+
+  state.outbox.push({
+    id: entry.client_uuid, kind: 'expense', payload: entry,
+    createdAt: Date.now(), attempts: 0, status: 'pending', error: '',
+  });
+  persistOutbox();
+  await audit('expense.queued', 'expense', entry.id, `${value} · ${entry.category}`);
+  notify();
+  syncNow();
+  return { ok: true, queued: true, expense: entry };
+}
+
 // ── Sync ────────────────────────────────────────────────────────────────────
+
+function persistConflicts() {
+  write(CONFLICTS_KEY, state.conflicts);
+  if (state.db.available) {
+    dbPutMany('conflicts', state.conflicts.map((row) => ({ ...row, id: row.id || row.key }))).catch(() => {});
+  }
+}
+
+function noteConflict(entity, id, local, incoming) {
+  const key = `${entity}:${id}`;
+  if (state.conflicts.some((c) => c.key === key && c.incomingRev === num(incoming?.rev))) return;
+  state.conflicts.unshift({
+    id: uuid(),
+    key,
+    entity,
+    id_value: id,
+    localRev: num(local?.rev),
+    incomingRev: num(incoming?.rev),
+    localUpdated: local?.updated_at || '',
+    incomingUpdated: incoming?.updated_at || '',
+    at: new Date().toISOString(),
+    resolved: false,
+    choice: '',
+    local,
+    incoming,
+  });
+  state.conflicts = state.conflicts.slice(0, 40);
+  persistConflicts();
+}
 
 function mergeProducts(incoming) {
   const map = new Map(state.products.map((p) => [Number(p.id), p]));
-  for (const product of incoming) map.set(Number(product.id), decorateProduct(product));
+  for (const product of incoming) {
+    const id = Number(product.id);
+    const local = map.get(id);
+    let keptStock = null;
+    if (local && num(local.rev) > num(product.rev) && num(product.rev) > 0) {
+      noteConflict('product', id, local, product);
+      // A newer device edit (stock take, price change) has not reached the
+      // server yet. Keep it visible instead of silently reverting the shelf.
+      keptStock = num(local.stock_qty);
+    }
+    map.set(id, decorateProduct(keptStock === null ? product : { ...product, stock_qty: keptStock }));
+  }
   state.products = sortBy([...map.values()], 'name');
+}
+
+function mergeMoney(local, incoming) {
+  const payments = new Map();
+  for (const entry of [...(local?.payments || []), ...(incoming?.payments || [])]) {
+    const key = entry.client_uuid || `${entry.method}:${entry.paid_at}:${entry.amount}`;
+    payments.set(key, { ...(payments.get(key) || {}), ...entry });
+  }
+  const refunds = new Map();
+  for (const entry of [...(local?.refunds || []), ...(incoming?.refunds || [])]) {
+    const key = entry.client_uuid || `${entry.method}:${entry.refunded_at}:${entry.amount}`;
+    refunds.set(key, { ...(refunds.get(key) || {}), ...entry });
+  }
+  const paid = round2(Math.max(num(local?.amount_paid), num(incoming?.amount_paid)));
+  const status = paymentStatus(paid, num(incoming?.total_amount));
+  return {
+    payments: [...payments.values()],
+    refunds: [...refunds.values()],
+    amount_paid: paid,
+    due_amount: round2(Math.max(0, num(incoming?.total_amount) - paid)),
+    payment_status: status,
+    // Fulfilment status comes from the server; settle only a zero balance.
+    status: status === 'PAID' ? 'PAID' : (incoming?.status || local?.status || 'CONFIRMED'),
+  };
 }
 
 function mergeOrders(incoming) {
@@ -759,11 +1472,39 @@ function mergeOrders(incoming) {
   for (const order of incoming) {
     const id = Number(order.id);
     if (!id) continue;
-    map.set(id, { ...(map.get(id) || {}), ...order });
+    const local = map.get(id);
+    // A local row with newer money than the server row is a real conflict.
+    // Union the ledgers so no payment is lost, then let the outbox push it.
+    const localMoney = num(local?.amount_paid) > num(order.amount_paid) || num(local?.refunded_amount) > num(order.refunded_amount);
+    if (local && localMoney && num(local.rev) > num(order.rev) && num(order.rev) > 0) {
+      noteConflict('order', id, local, order);
+      map.set(id, { ...(local || {}), ...order, ...mergeMoney(local, order) });
+      continue;
+    }
+    map.set(id, { ...(local || {}), ...order });
   }
   state.orders = [...map.values()]
     .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')) || Number(b.id) - Number(a.id))
     .slice(0, MAX_ORDERS);
+}
+
+/** Chooses which copy wins after a sync conflict. Always auditable. */
+export async function resolveConflict(key, choice = 'server') {
+  const conflict = state.conflicts.find((c) => c.key === key);
+  if (!conflict) return false;
+  const selected = choice === 'device' ? 'device' : 'server';
+  conflict.resolved = true;
+  conflict.choice = selected;
+  conflict.resolvedAt = new Date().toISOString();
+  persistConflicts();
+  if (selected === 'device' && conflict.local) {
+    if (conflict.entity === 'order') mergeOrders([conflict.local]);
+    if (conflict.entity === 'product') mergeProducts([conflict.local]);
+    persistCache();
+  }
+  await audit(`conflict.${selected}`, conflict.entity, conflict.id_value || conflict.id, conflict.key);
+  notify();
+  return true;
 }
 
 /** Lets admin forms push a freshly saved row without waiting for the next poll. */
@@ -789,11 +1530,28 @@ function applySync(payload) {
   if (Array.isArray(payload.products) && payload.products.length) mergeProducts(payload.products);
   if (Array.isArray(payload.orders) && payload.orders.length) mergeOrders(payload.orders);
   if (Array.isArray(payload.customers) && payload.customers.length) mergeCustomers(payload.customers);
+  if (Array.isArray(payload.expenses) && payload.expenses.length) {
+    const map = new Map(state.expenses.map((e) => [String(e.id), e]));
+    for (const expense of payload.expenses) map.set(String(expense.id), expense);
+    state.expenses = [...map.values()].sort((a, b) => String(b.spent_at || '').localeCompare(String(a.spent_at || '')));
+  }
+  if (Array.isArray(payload.staff) && payload.staff.length) state.remoteStaff = payload.staff;
+  if (Array.isArray(payload.audit) && payload.audit.length) {
+    const mapped = payload.audit.map((row) => ({
+      ...row,
+      at: row.created_at || row.at || new Date().toISOString(),
+    }));
+    const seen = new Set(state.audit.map((row) => `${row.at}|${row.action}|${row.detail || ''}`));
+    state.audit = [...mapped.filter((row) => !seen.has(`${row.at}|${row.action}|${row.detail || ''}`)), ...state.audit]
+      .sort((a, b) => String(b.at).localeCompare(String(a.at)))
+      .slice(0, 300);
+  }
   if (payload.settings && typeof payload.settings === 'object') {
     const { admin_pin_hash, ...safe } = payload.settings;
     state.settings = withDefaults({ ...state.settings, ...safe });
   }
   state.rev = Math.max(state.rev, num(payload.server_rev));
+  persistCache();
 }
 
 let syncing = false;
@@ -823,8 +1581,11 @@ export async function syncNow({ quiet = false } = {}) {
     applySync(payload);
 
     let guard = 0;
-    while (payload.truncated && guard < 12) {
+    while (payload.truncated && guard < 50) {
       guard += 1;
+      // The first page is oldest-first; resume from its last revision instead
+      // of jumping straight to server_rev and silently dropping later pages.
+      state.rev = num(payload.next_since, state.rev);
       payload = await api.sync(state.rev);
       applySync(payload);
     }
@@ -845,7 +1606,12 @@ export async function syncNow({ quiet = false } = {}) {
 export async function verifySession() {
   if (state.isAdmin && getToken() && !isTokenExpired()) {
     try {
-      await api.me();
+      const info = await api.me();
+      if (info?.role && ROLES[String(info.role).toUpperCase()]) {
+        state.role = String(info.role).toUpperCase();
+        write(SESSION_KEY, { isAdmin: state.isAdmin, isCustomer: state.isCustomer, role: state.role });
+        try { localStorage.setItem(ROLE_KEY, state.role); } catch { /* ignore */ }
+      }
       return true;
     } catch (error) {
       if (error instanceof ApiError && error.isAuth) {

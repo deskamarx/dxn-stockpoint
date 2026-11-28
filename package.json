@@ -1,6 +1,6 @@
 {
   "name": "mohammadpur-stockpoint",
-  "version": "3.1.2",
+  "version": "3.2.0",
   "private": true,
   "type": "module",
   "description": "Mohammadpur Stock Point — offline-first DXN point of sale, inventory and customer desk.",
@@ -10,7 +10,7 @@
     "dev": "node --watch server/index.js",
     "demo": "node server/index.js --demo --open",
     "reset": "node server/index.js --reset --open",
-    "test": "node --test tests/api.test.mjs",
+    "test": "node --test tests",
     "check": "node scripts/check-js.mjs"
   },
   "engines": {

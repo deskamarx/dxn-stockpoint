@@ -226,7 +226,12 @@ export const api = {
   },
   me: () => request('/api/v1/auth/me'),
   changePin: (newPin) => request('/api/v1/auth/pin', { method: 'POST', body: { new_pin: newPin } }),
-  logout: () => setToken(''),
+  async logout() {
+    try {
+      if (getToken()) await request('/api/v1/auth/logout', { method: 'POST' });
+    } catch { /* the local session is cleared even when the server is offline */ }
+    setToken('');
+  },
   // ── Customer account ─────────────────────────────────────────────────────
   myProfile: () => request('/api/v1/my/profile'),
   updateMyProfile: (patch) => request('/api/v1/my/profile', { method: 'PUT', body: patch }),
@@ -256,12 +261,32 @@ export const api = {
   createOrder: (payload) => request('/api/v1/orders', { method: 'POST', body: payload }),
   setOrderStatus: (id, status) =>
     request(`/api/v1/orders/${id}/status`, { method: 'POST', body: { status } }),
+  markPaid: (id) => request(`/api/v1/orders/${id}/mark-paid`, { method: 'POST' }),
+  recordPayment: (id, payload) =>
+    request(`/api/v1/orders/${id}/payments`, { method: 'POST', body: payload }),
+  createReturn: (id, payload) =>
+    request(`/api/v1/orders/${id}/returns`, { method: 'POST', body: payload }),
+  orderTimeline: (id) => request(`/api/v1/orders/${id}/timeline`),
+  payments: (params = {}) => request(`/api/v1/payments${qs(params)}`),
+  returns: () => request('/api/v1/returns'),
   receipt: (id) => request(`/api/v1/orders/${id}/receipt`),
+
+  // ── Expenses, staff & audit ──────────────────────────────────────────────
+  expenses: (limit = 300) => request(`/api/v1/expenses${qs({ limit })}`),
+  createExpense: (payload) => request('/api/v1/expenses', { method: 'POST', body: payload }),
+  staff: () => request('/api/v1/staff'),
+  createStaff: (payload) => request('/api/v1/staff', { method: 'POST', body: payload }),
+  updateStaff: (id, patch) => request(`/api/v1/staff/${id}`, { method: 'PUT', body: patch }),
+  deleteStaff: (id) => request(`/api/v1/staff/${id}`, { method: 'DELETE' }),
+  audit: (limit = 200) => request(`/api/v1/audit${qs({ limit })}`),
+  snapshots: () => request('/api/v1/database/snapshots'),
+  rollback: (snapshot) => request('/api/v1/database/rollback', { method: 'POST', body: { snapshot } }),
 
   // ── Reports ──────────────────────────────────────────────────────────────
   customers: (q = '') => request(`/api/v1/customers${qs({ q })}`),
   dashboard: () => request('/api/v1/dashboard'),
   salesReport: (from, to) => request(`/api/v1/reports/sales${qs({ from, to })}`),
+  demoSeed: () => request('/api/v1/demo/seed', { method: 'POST' }),
 
   // ── Courier (SteadFast) ─────────────────────────────────────────────────
   courierSettings: () => request('/api/v1/courier/settings'),

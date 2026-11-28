@@ -158,6 +158,7 @@ test('oversell: rejected without the flag, allowed with it', async () => {
   assert.equal(rejected.body.error.code, 'insufficient_stock');
 
   const allowed = await ctx.call('POST', '/api/v1/orders', {
+    token: adminToken,
     body: {
       client_uuid: `over-ok-${crypto.randomUUID()}`,
       customer_name: 'Oversell Allow',
@@ -261,4 +262,326 @@ test('settings save: strips the admin hash from the response', async () => {
   assert.equal(status, 200);
   assert.equal(body.settings.branch_name, 'Test Stockpoint');
   assert.ok(!('admin_pin_hash' in body.settings));
+});
+
+const round2 = (value) => Math.round(Number(value) * 100) / 100;
+
+async function stockedProduct(minimum = 12) {
+  const list = await ctx.call('GET', '/api/v1/products');
+  const product = list.body.products.find((row) => row.stock_qty >= minimum && row.id !== 1);
+  assert.ok(product, `seed should contain a product with at least ${minimum} units`);
+  return product;
+}
+
+test('split payments: partial collection is idempotent, capped and auditable', async () => {
+  const product = await stockedProduct();
+  const total = round2(product.retail_price * 2);
+  const uuid = `pay-order-${crypto.randomUUID()}`;
+  const created = await ctx.call('POST', '/api/v1/orders', {
+    body: {
+      client_uuid: uuid,
+      customer_name: 'Split Payment Customer',
+      customer_phone: '01922222222',
+      payment_method: 'CREDIT',
+      items: [{ product_id: product.id, quantity: 2, unit_price: product.retail_price, unit_pv: product.pv_points }],
+      source: 'test',
+    },
+  });
+  assert.equal(created.status, 201);
+  const orderId = created.body.order.id;
+  assert.equal(created.body.order.payment_status, 'UNPAID');
+  assert.equal(round2(created.body.order.due_amount), total);
+
+  const firstUuid = `pay-1-${crypto.randomUUID()}`;
+  const first = await ctx.call('POST', `/api/v1/orders/${orderId}/payments`, {
+    token: adminToken,
+    body: { client_uuid: firstUuid, amount: round2(total / 2), method: 'BKASH', reference: 'TRX-1' },
+  });
+  assert.equal(first.status, 200);
+  assert.equal(first.body.duplicate, false);
+  assert.equal(first.body.order.payment_status, 'PARTIALLY_PAID');
+
+  const duplicate = await ctx.call('POST', `/api/v1/orders/${orderId}/payments`, {
+    token: adminToken,
+    body: { client_uuid: firstUuid, amount: round2(total / 2), method: 'BKASH', reference: 'TRX-1' },
+  });
+  assert.equal(duplicate.body.duplicate, true);
+  assert.equal(duplicate.body.payment.id, first.body.payment.id);
+  assert.equal(round2(duplicate.body.order.amount_paid), round2(total / 2), 'a retry must not double-count');
+
+  const rest = round2(total - round2(total / 2));
+  const second = await ctx.call('POST', `/api/v1/orders/${orderId}/payments`, {
+    token: adminToken,
+    body: { amount: rest, method: 'CASH' },
+  });
+  assert.equal(second.status, 200);
+  assert.equal(second.body.order.payment_status, 'PAID');
+  assert.equal(second.body.order.status, 'PAID');
+  assert.equal(round2(second.body.order.due_amount), 0);
+
+  const over = await ctx.call('POST', `/api/v1/orders/${orderId}/payments`, {
+    token: adminToken,
+    body: { amount: 1, method: 'CASH' },
+  });
+  assert.equal(over.status, 422);
+  assert.equal(over.body.error.code, 'overpayment');
+
+  const timeline = await ctx.call('GET', `/api/v1/orders/${orderId}/timeline`, { token: adminToken });
+  assert.equal(timeline.status, 200);
+  assert.equal(timeline.body.timeline.filter((row) => row.kind === 'payment').length, 2);
+
+  const ledger = await ctx.call('GET', '/api/v1/payments', { token: adminToken });
+  assert.equal(ledger.status, 200);
+  assert.ok(ledger.body.by_method.BKASH >= round2(total / 2));
+  assert.ok(ledger.body.by_method.CASH >= rest);
+});
+
+test('returns: linked reversal restores stock and caps the refund at money collected', async () => {
+  const product = await stockedProduct();
+  const unit = round2(product.retail_price);
+  const created = await ctx.call('POST', '/api/v1/orders', {
+    body: {
+      client_uuid: `return-order-${crypto.randomUUID()}`,
+      customer_name: 'Return Customer',
+      customer_phone: '01933333333',
+      payment_method: 'CREDIT',
+      items: [{ product_id: product.id, quantity: 3, unit_price: unit, unit_pv: product.pv_points }],
+      source: 'test',
+    },
+  });
+  assert.equal(created.status, 201);
+  const orderId = created.body.order.id;
+
+  const partial = await ctx.call('POST', `/api/v1/orders/${orderId}/payments`, {
+    token: adminToken,
+    body: { amount: unit, method: 'CASH' },
+  });
+  assert.equal(partial.status, 200);
+
+  const beforeStock = (await ctx.call('GET', `/api/v1/products/${product.id}`)).body.product.stock_qty;
+  const returnUuid = `return-${crypto.randomUUID()}`;
+  const returned = await ctx.call('POST', `/api/v1/orders/${orderId}/returns`, {
+    token: adminToken,
+    body: {
+      client_uuid: returnUuid,
+      items: [{ product_id: product.id, quantity: 2 }],
+      reason: 'Damaged in transit',
+      refund_method: 'BKASH',
+      source: 'test',
+    },
+  });
+  assert.equal(returned.status, 200);
+  const returnOrder = returned.body.order;
+  assert.equal(returnOrder.type, 'RETURN');
+  assert.equal(Number(returnOrder.original_order_id), Number(orderId));
+  assert.equal(Number(returnOrder.items[0].quantity), -2);
+  assert.equal(round2(returnOrder.total_amount), -unit, 'refund is capped by the single collected unit');
+  assert.equal(round2(returned.body.original.refunded_amount), unit);
+
+  const afterStock = (await ctx.call('GET', `/api/v1/products/${product.id}`)).body.product.stock_qty;
+  assert.equal(afterStock, beforeStock + 2, 'restoring stock must not resurrect the unsold unit');
+
+  const duplicate = await ctx.call('POST', `/api/v1/orders/${orderId}/returns`, {
+    token: adminToken,
+    body: { client_uuid: returnUuid, items: [{ product_id: product.id, quantity: 2 }] },
+  });
+  assert.equal(duplicate.body.duplicate, true);
+  assert.equal(duplicate.body.order.id, returnOrder.id);
+
+  const overReturn = await ctx.call('POST', `/api/v1/orders/${orderId}/returns`, {
+    token: adminToken,
+    body: { items: [{ product_id: product.id, quantity: 2 }] },
+  });
+  assert.equal(overReturn.status, 422);
+  assert.equal(overReturn.body.error.code, 'invalid_quantity');
+
+  const returns = await ctx.call('GET', '/api/v1/returns', { token: adminToken });
+  assert.ok(returns.body.returns.some((row) => row.id === returnOrder.id));
+});
+
+test('expenses: staff-only writes, idempotent retries and ledger visibility', async () => {
+  const anonymous = await ctx.call('GET', '/api/v1/expenses');
+  assert.equal(anonymous.status, 401);
+
+  const uuid = `expense-${crypto.randomUUID()}`;
+  const payload = { client_uuid: uuid, category: 'Transport', amount: 120.5, note: 'Delivered returns' };
+  const created = await ctx.call('POST', '/api/v1/expenses', { token: adminToken, body: payload });
+  assert.equal(created.status, 200);
+  assert.equal(created.body.duplicate, false);
+
+  const duplicate = await ctx.call('POST', '/api/v1/expenses', { token: adminToken, body: payload });
+  assert.equal(duplicate.body.duplicate, true);
+  assert.equal(duplicate.body.expense.id, created.body.expense.id);
+
+  const list = await ctx.call('GET', '/api/v1/expenses', { token: adminToken });
+  assert.equal(list.status, 200);
+  assert.equal(list.body.expenses.filter((row) => row.client_uuid === uuid).length, 1);
+});
+
+let cashierToken = '';
+let viewerToken = '';
+
+test('staff and RBAC: individual PINs, role gates and staff changes', async () => {
+  const anonymous = await ctx.call('GET', '/api/v1/staff');
+  assert.equal(anonymous.status, 401);
+
+  const cashier = await ctx.call('POST', '/api/v1/staff', {
+    token: adminToken,
+    body: { name: 'Cashier One', role: 'CASHIER', pin: '1357' },
+  });
+  assert.equal(cashier.status, 201);
+  const cashierId = cashier.body.staff.id;
+  assert.ok(!('pin_hash' in cashier.body.staff) && !('salt' in cashier.body.staff));
+
+  const viewer = await ctx.call('POST', '/api/v1/staff', {
+    token: adminToken,
+    body: { name: 'Viewer One', role: 'VIEWER', pin: '24680' },
+  });
+  assert.equal(viewer.status, 201);
+  const viewerId = viewer.body.staff.id;
+
+  const cashierLogin = await ctx.call('POST', '/api/v1/auth/login', { body: { pin: '1357' } });
+  assert.equal(cashierLogin.status, 200);
+  assert.equal(cashierLogin.body.role, 'CASHIER');
+  cashierToken = cashierLogin.body.token;
+
+  const viewerLogin = await ctx.call('POST', '/api/v1/auth/login', { body: { pin: '24680' } });
+  assert.equal(viewerLogin.status, 200);
+  assert.equal(viewerLogin.body.role, 'VIEWER');
+  viewerToken = viewerLogin.body.token;
+
+  assert.equal((await ctx.call('GET', '/api/v1/staff', { token: cashierToken })).status, 200);
+  assert.equal((await ctx.call('POST', '/api/v1/staff', {
+    token: cashierToken,
+    body: { name: 'Nope', role: 'ADMIN', pin: '1111' },
+  })).status, 403);
+  assert.equal((await ctx.call('GET', '/api/v1/database/snapshots', { token: cashierToken })).status, 403);
+  assert.equal((await ctx.call('POST', '/api/v1/expenses', {
+    token: cashierToken,
+    body: { category: 'Supplies', amount: 25 },
+  })).status, 200);
+
+  assert.equal((await ctx.call('GET', '/api/v1/orders', { token: viewerToken })).status, 200);
+  assert.equal((await ctx.call('POST', '/api/v1/expenses', {
+    token: viewerToken,
+    body: { category: 'Supplies', amount: 25 },
+  })).status, 403);
+  assert.equal((await ctx.call('GET', '/api/v1/audit', { token: viewerToken })).status, 200);
+
+  const changed = await ctx.call('PUT', `/api/v1/staff/${cashierId}`, {
+    token: adminToken,
+    body: { role: 'MANAGER' },
+  });
+  assert.equal(changed.status, 200);
+  assert.equal(changed.body.staff.role, 'MANAGER');
+
+  const deleted = await ctx.call('DELETE', `/api/v1/staff/${viewerId}`, { token: adminToken });
+  assert.equal(deleted.status, 200);
+  assert.equal((await ctx.call('POST', '/api/v1/auth/login', { body: { pin: '24680' } })).status, 401);
+});
+
+test('audit: writes carry the acting staff member and their role', async () => {
+  const { status, body } = await ctx.call('GET', '/api/v1/audit?limit=200', { token: adminToken });
+  assert.equal(status, 200);
+  const actions = new Set(body.entries.map((row) => row.action));
+  for (const expected of ['signed_in', 'payment_recorded', 'return_created', 'expense_created', 'staff_created', 'staff_deleted']) {
+    assert.ok(actions.has(expected), `audit log is missing ${expected}`);
+  }
+  const cashierExpense = body.entries.find((row) => row.action === 'expense_created' && row.actor === 'Cashier One');
+  assert.ok(cashierExpense, 'the cashier expense must be attributed to the cashier');
+  assert.equal(cashierExpense.role, 'CASHIER');
+});
+
+test('sync scope: staff receive money and audit data, customers do not', async () => {
+  const admin = await ctx.call('GET', '/api/v1/sync?since=0', { token: adminToken });
+  assert.equal(admin.body.scope, 'admin');
+  assert.ok(Array.isArray(admin.body.expenses));
+  assert.ok(Array.isArray(admin.body.staff));
+  assert.ok(Array.isArray(admin.body.audit));
+  assert.ok(admin.body.expenses.length > 0);
+
+  const cashier = await ctx.call('GET', '/api/v1/sync?since=0', { token: cashierToken });
+  assert.equal(cashier.status, 200);
+  assert.equal(cashier.body.scope, 'staff');
+  assert.ok(cashier.body.orders.length > 0);
+  assert.equal(cashier.body.staff.length, 0, 'staff lists are administrator-only');
+
+  const publicSync = await ctx.call('GET', '/api/v1/sync?since=0');
+  assert.equal(publicSync.body.scope, 'public');
+  assert.equal(publicSync.body.orders.length, 0);
+  assert.equal(publicSync.body.expenses.length, 0);
+});
+
+test('snapshots and rollback routes are administrator-only and validate input', async () => {
+  assert.equal((await ctx.call('GET', '/api/v1/database/snapshots')).status, 401);
+  assert.equal((await ctx.call('GET', '/api/v1/database/snapshots', { token: cashierToken })).status, 403);
+  const list = await ctx.call('GET', '/api/v1/database/snapshots', { token: adminToken });
+  assert.equal(list.status, 200);
+  assert.ok(Array.isArray(list.body.snapshots));
+
+  const invalid = await ctx.call('POST', '/api/v1/database/rollback', {
+    token: adminToken,
+    body: { snapshot: '../../db.json' },
+  });
+  assert.equal(invalid.status, 422);
+  assert.equal(invalid.body.error.code, 'invalid_snapshot');
+});
+
+test('logout: the server invalidates the session immediately', async () => {
+  const login = await ctx.call('POST', '/api/v1/auth/login', { body: { pin: '1357' } });
+  assert.equal(login.status, 200);
+  const token = login.body.token;
+  assert.equal((await ctx.call('GET', '/api/v1/orders', { token })).status, 200);
+  assert.equal((await ctx.call('POST', '/api/v1/auth/logout', { token })).status, 200);
+  assert.equal((await ctx.call('GET', '/api/v1/orders', { token })).status, 401);
+});
+
+test('demo seed: administrator-only additive helper', async () => {
+  assert.equal((await ctx.call('POST', '/api/v1/demo/seed', { token: cashierToken })).status, 403);
+  const before = (await ctx.call('GET', '/api/v1/health')).body.database.counts.orders;
+  const seeded = await ctx.call('POST', '/api/v1/demo/seed', { token: adminToken });
+  assert.equal(seeded.status, 200);
+  const after = (await ctx.call('GET', '/api/v1/health')).body.database.counts.orders;
+  assert.ok(after >= before, 'demo seed must never delete existing orders');
+});
+
+test('versioned migration: a v1 database is snapshotted, upgraded and reversible', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stockpoint-migration-'));
+  try {
+    const seedDb = new Database({ dataDir, pin: '2468', adminKey: 'test-admin-key' });
+    const legacy = JSON.parse(JSON.stringify(seedDb.data));
+    legacy.meta.version = 1;
+    legacy.meta.rev = 3;
+    legacy.orders = [{
+      id: 1,
+      client_uuid: 'legacy-order-1',
+      order_number: 'MSP-000000-0001',
+      type: 'SALE',
+      customer_name: 'Legacy Customer',
+      total_amount: 500,
+      subtotal: 500,
+      items: [],
+      created_at: new Date().toISOString(),
+      status: 'CONFIRMED',
+    }];
+    delete legacy.expenses;
+    delete legacy.staff;
+    fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify(legacy, null, 2));
+
+    const migrated = new Database({ dataDir, pin: '2468', adminKey: 'test-admin-key' });
+    assert.equal(migrated.data.meta.version, 4);
+    assert.equal(migrated.data.orders.length, 1, 'the legacy order must survive the migration');
+    assert.deepEqual(migrated.data.expenses, []);
+    assert.deepEqual(migrated.data.staff, []);
+    assert.ok(migrated.data.orders[0].payments, 'legacy orders gain a payment ledger');
+    assert.ok(migrated.snapshots().some((row) => row.name === 'db.v1.snapshot.json'));
+
+    const rollback = migrated.rollback('db.v1.snapshot.json');
+    assert.equal(rollback.snapshot, 'db.v1.snapshot.json');
+    assert.equal(rollback.version, 4, 'rollback replays the additive migration before serving');
+    assert.equal(migrated.data.orders.length, 1, 'rollback must not delete the legacy order');
+    assert.ok(migrated.snapshots().some((row) => row.name === 'db.v1.snapshot.json'), 'snapshots are immutable');
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
 });

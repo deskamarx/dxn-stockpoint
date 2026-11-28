@@ -117,9 +117,16 @@ function updateChrome() {
   }
 
   const initials = $('#avatarInitials');
-  if (initials) initials.textContent = store.state.isAdmin ? 'AD' : (store.state.isCustomer && store.state.customer?.name ? store.state.customer.name.charAt(0).toUpperCase() : 'MS');
+  if (initials) {
+    const role = store.state.role;
+    initials.textContent = store.state.isAdmin
+      ? (role === 'ADMIN' ? 'AD' : role === 'MANAGER' ? 'MG' : role === 'CASHIER' ? 'CA' : 'VW')
+      : (store.state.isCustomer && store.state.customer?.name ? store.state.customer.name.charAt(0).toUpperCase() : 'MS');
+  }
   const adminDot = $('#adminDot');
   if (adminDot) adminDot.hidden = !store.state.isAdmin;
+  const accountBtn = $('#accountBtn');
+  if (accountBtn) accountBtn.title = store.state.isAdmin ? `${store.state.role} signed in` : 'Shop account';
 
   const footerSync = $('#footerSync');
   if (footerSync) footerSync.textContent = hasBase() ? `Live · rev ${int(rev)}` : 'Local mode';
@@ -290,7 +297,8 @@ function openAccount() {
     onMount(panel, close) {
       panel.querySelector('[data-signin]')?.addEventListener('click', () => { close(); openLogin(); });
       panel.querySelector('[data-custsignin]')?.addEventListener('click', () => { close(); openCustomerAuth('login'); });
-      panel.querySelector('[data-signout]')?.addEventListener('click', () => {
+      panel.querySelector('[data-signout]')?.addEventListener('click', async () => {
+        await api.logout();
         store.setAdmin(false);
         close();
         toast('Signed out.');
@@ -301,38 +309,20 @@ function openAccount() {
 }
 
 function openLogin() {
-  if (!hasBase()) {
-    openModal({
-      title: 'Connect the shop server first',
-      body: `
-        <p style="font-size:13.5px;line-height:1.7;color:var(--muted)">
-          The admin panel signs in against your own API. Add the address once — the Android app uses
-          the same one — and the PIN will work on every device. Or run <code>npm start</code> locally.
-        </p>
-      `,
-      footer: `
-        <button class="btn btn--ghost" type="button" data-close>Later</button>
-        <button class="btn btn--primary" type="button" data-go-settings>${icon('settings', 16)} Open settings</button>
-      `,
-      onMount(panel, close) {
-        panel.querySelector('[data-go-settings]').addEventListener('click', () => {
-          close();
-          location.hash = '#/settings';
-        });
-      },
-    });
-    return;
-  }
-
   openModal({
     title: 'Shop sign-in',
     body: `
       <img class="about-logo" src="icons/logo-full.png" alt="Mohammadpur Stock Point" width="120" height="120">
       <form id="loginForm" autocomplete="off">
-        <label class="field"><span>Shop PIN</span>
+        <label class="field"><span>Staff PIN</span>
           <input class="input" id="pinInput" type="password" inputmode="numeric" autocomplete="current-password"
             placeholder="••••" required minlength="4" style="font-size:20px;letter-spacing:8px;text-align:center"></label>
-        <p style="font-size:12px;color:var(--muted);text-align:center">${esc(getBase() || '')}</p>
+        <p style="font-size:12px;color:var(--muted);text-align:center">
+          ${hasBase() ? esc(getBase()) : 'Offline sign-in — verified on this device'}
+        </p>
+        <p style="font-size:11.5px;color:var(--faint);text-align:center;margin-top:6px">
+          Default owner PIN <strong>2468</strong>. Change it in Settings → Security.
+        </p>
       </form>
     `,
     footer: `
@@ -348,19 +338,32 @@ function openLogin() {
         if (!pin) return;
         button.disabled = true;
         button.innerHTML = '<span class="spinner"></span> Checking…';
-        try {
-          await api.login(pin);
-          store.setAdmin(true);
-          await store.verifySession();
-          store.syncNow();
+        let role = null;
+        let lastError = '';
+        if (hasBase()) {
+          try {
+            const result = await api.login(pin);
+            role = result.role || 'ADMIN';
+            store.setRole(role);
+            await store.verifySession();
+            store.syncNow();
+          } catch (error) {
+            lastError = error instanceof ApiError
+              ? (error.status === 401 ? 'Wrong PIN. Try again.' : error.message)
+              : 'Could not sign in.';
+          }
+        }
+        if (!role) {
+          const local = await store.loginLocal(pin);
+          if (local.ok) role = local.role;
+          else lastError = hasBase() ? lastError : local.message;
+        }
+        if (role) {
           closeModal();
-          toast('Welcome back — admin unlocked.', 'ok');
+          toast(`Welcome back — ${role.toLowerCase()} unlocked.`, 'ok');
           render({ force: true });
-        } catch (error) {
-          const message = error instanceof ApiError
-            ? (error.status === 401 ? 'Wrong PIN. Try again.' : error.message)
-            : 'Could not sign in.';
-          toast(message, 'error');
+        } else {
+          toast(lastError || 'Could not sign in.', 'error');
           button.disabled = false;
           button.innerHTML = `${icon('user', 16)} Unlock`;
           panel.querySelector('#pinInput').select();
@@ -651,6 +654,13 @@ async function boot() {
   booted = true;
 
   store.hydrate();
+
+  // Open the durable database in the background; the localStorage mirror has
+  // already painted the first frame.
+  store.initDurable().then((result) => {
+    if (!result.ok) console.warn('Durable storage unavailable:', result.error);
+    else render({ force: true });
+  }).catch((error) => console.warn(error));
 
   // index.html sets the dataset before paint; adopt it as the app state.
   const initialTheme = document.documentElement.dataset.theme;

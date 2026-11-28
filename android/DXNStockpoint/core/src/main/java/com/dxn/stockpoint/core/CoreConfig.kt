@@ -4,6 +4,7 @@ import android.content.Context
 import com.dxn.stockpoint.data.api.RetrofitClient
 import com.dxn.stockpoint.data.local.JsonCache
 import com.dxn.stockpoint.data.local.Prefs
+import com.dxn.stockpoint.data.sync.SyncWorker
 
 enum class AppRole { OWNER, CUSTOMER }
 
@@ -28,6 +29,7 @@ object StockpointCore {
         Prefs.init(context)
         JsonCache.init(context)
         RetrofitClient.init(context)
+        if (role == AppRole.OWNER) SyncWorker.enqueue(context)
     }
 }
 
