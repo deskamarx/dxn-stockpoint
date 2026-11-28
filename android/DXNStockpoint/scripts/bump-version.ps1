@@ -4,7 +4,7 @@ Bumps the shared version for both apps.
 
 .EXAMPLE
 .\scripts\bump-version.ps1
-.\scripts\bump-version.ps1 -VersionName 3.2.0
+.\scripts\bump-version.ps1 -VersionName 3.2.1
 #>
 param(
     [string]$VersionName

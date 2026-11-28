@@ -1,6 +1,7 @@
 package com.dxn.stockpoint
 
 import com.dxn.stockpoint.data.api.RetrofitClient
+import com.dxn.stockpoint.data.model.Product
 import com.dxn.stockpoint.data.model.SyncResponse
 import com.google.gson.Gson
 import org.junit.Assert.assertEquals
@@ -41,5 +42,19 @@ class CoreContractTest {
         )
         assertFalse(last.truncated)
         assertEquals(null, last.nextSince)
+    }
+
+    @Test
+    fun productsAcceptBothNumericAndBooleanActiveFlags() {
+        val numeric = RetrofitClient.gson.fromJson(
+            """{"id":1,"sku":"A","name":"A","is_active":1,"stock_qty":2}""",
+            Product::class.java,
+        )
+        val boolean = RetrofitClient.gson.fromJson(
+            """{"id":2,"sku":"B","name":"B","is_active":false,"stock_qty":0}""",
+            Product::class.java,
+        )
+        assertTrue(numeric.isActive)
+        assertFalse(boolean.isActive)
     }
 }

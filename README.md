@@ -60,8 +60,9 @@ Other commands:
 | `npm run dev` | Start with auto-reload on server file changes |
 | `npm run reset` | Wipe local data (server/data/db.json) and reseed |
 | `npm run demo` | Start with demo demo catalogue reseed |
-| `npm test` | 13 API contract tests against a live in-process server |
-| `npm run check` | Static checks: import graph, sw.js precache, manifest references |
+| `npm test` | 32 API and client-logic tests against a live in-process server |
+| `npm run check` | Static checks: import graph, sw.js precache, manifest references, release version agreement |
+| `node scripts/rehearse-migration.mjs --data <copy-of-db.json>` | Rehearse the v1→v4 migration and rollback on a **copy** of shop data |
 
 Data lives in `server/data/db.json` (gitignored). The optional admin key —
 for machine-to-machine auth via `X-Api-Key` — defaults to
@@ -169,7 +170,7 @@ cd android/DXNStockpoint
 ./scripts/build-apps.sh --release --api-url https://shop.example.com/ --aab
 ./scripts/build-apps.sh --debug --client-only
 ./scripts/build-apps.sh --release --suite-only
-./scripts/bump-version.sh 3.2.0             # versionCode + versionName
+./scripts/bump-version.sh 3.2.1             # versionCode + versionName
 ```
 
 Release builds refuse the `shop.example.com` placeholder unless
@@ -205,7 +206,11 @@ Full walkthrough in [deploy/README.md](deploy/README.md). The short version:
 4. **Local LAN** still works with `npm start` or `start-lan.cmd`; the web app
    now defaults to its own origin, so no API URL is needed.
 5. **PHP** (`api/`) remains available for shared hosting but is no longer the
-   recommended production path.
+   recommended production path. It implements the original v1 catalogue/order
+   contract only; split payments, returns, staff RBAC, audit, expenses,
+   snapshots/rollback and v4 sync are **Node-only**. See
+   [ARCHITECTURE.md](ARCHITECTURE.md) for the exact scope and the Capacitor
+   decision.
 
 ## Troubleshooting
 

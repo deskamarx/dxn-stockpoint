@@ -12,7 +12,6 @@ import com.dxn.stockpoint.data.repository.Result
 import com.dxn.stockpoint.data.repository.StockpointRepository
 import com.dxn.stockpoint.data.repository.newClientUuid
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -182,9 +181,10 @@ class StockpointViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun restoreCart() {
         runCatching {
-            val type = object : TypeToken<List<CartItem>>() {}.type
+            // An array class keeps a concrete Type under R8; anonymous
+            // TypeToken subclasses lose their generic superclass signature.
             val raw = Prefs.cartSnapshot
-            val restored: List<CartItem>? = gson.fromJson(raw, type)
+            val restored = gson.fromJson(raw, Array<CartItem>::class.java)?.toList()
             if (!restored.isNullOrEmpty()) _cart.value = restored
         }
     }

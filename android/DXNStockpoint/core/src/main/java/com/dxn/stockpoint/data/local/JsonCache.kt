@@ -5,7 +5,6 @@ import com.dxn.stockpoint.data.model.Order
 import com.dxn.stockpoint.data.model.PlaceOrderRequest
 import com.dxn.stockpoint.data.model.Product
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import java.io.File
 
 /**
@@ -65,8 +64,10 @@ object JsonCache {
                     ?.let { db().writeState(it) }
             }
             if (outboxFile.exists() && db().readOutbox().isEmpty()) {
-                val type = object : TypeToken<List<OutboxEntry>>() {}.type
-                gson.fromJson<List<OutboxEntry>>(outboxFile.readText(), type)
+                // Array<T> is a concrete Type even after R8 strips anonymous
+                // TypeToken generic signatures.
+                gson.fromJson(outboxFile.readText(), Array<OutboxEntry>::class.java)
+                    ?.toList()
                     ?.let { db().replaceOutbox(it) }
             }
             // Keep the originals as forensic copies instead of deleting them.

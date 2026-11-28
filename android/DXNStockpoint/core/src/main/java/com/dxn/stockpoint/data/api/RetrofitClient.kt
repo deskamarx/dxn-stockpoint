@@ -1,6 +1,11 @@
 package com.dxn.stockpoint.data.api
 
 import android.content.Context
+import com.google.gson.GsonBuilder
+import com.google.gson.TypeAdapter
+import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonToken
+import com.google.gson.stream.JsonWriter
 import com.dxn.stockpoint.core.BuildConfig
 import com.dxn.stockpoint.core.CoreConfig
 import com.dxn.stockpoint.data.local.Prefs
@@ -50,12 +55,47 @@ object RetrofitClient {
         .retryOnConnectionFailure(true)
         .build()
 
+    /**
+     * The PHP API and the Node API both ship boolean-like fields, but one uses
+     * 1/0 and the other uses true/false. Gson's default Boolean adapter only
+     * accepts the latter, which made the whole catalog fail to parse against a
+     * live Node server. Accept either representation (and "1"/"true") so the
+     * same APK works with both backends and with older cached rows.
+     */
+    private val lenientBoolean = object : TypeAdapter<Boolean>() {
+        override fun write(out: JsonWriter, value: Boolean?) {
+            if (value == null) out.nullValue() else out.value(value)
+        }
+
+        override fun read(input: JsonReader): Boolean? = when (input.peek()) {
+            JsonToken.BOOLEAN -> input.nextBoolean()
+            JsonToken.NUMBER -> input.nextDouble() != 0.0
+            JsonToken.STRING -> {
+                val text = input.nextString()
+                text.equals("true", ignoreCase = true) || text == "1"
+            }
+            JsonToken.NULL -> {
+                input.nextNull()
+                null
+            }
+            else -> {
+                input.skipValue()
+                false
+            }
+        }
+    }
+
+    internal val gson = GsonBuilder()
+        .registerTypeAdapter(Boolean::class.java, lenientBoolean)
+        .registerTypeAdapter(java.lang.Boolean::class.java, lenientBoolean)
+        .create()
+
     @Volatile private var retrofit: Retrofit = buildRetrofit()
 
     private fun buildRetrofit(): Retrofit = Retrofit.Builder()
         .baseUrl(baseUrl)
         .client(okHttpClient)
-        .addConverterFactory(GsonConverterFactory.create())
+        .addConverterFactory(GsonConverterFactory.create(gson))
         .build()
 
     val apiService: ApiService get() = retrofit.create(ApiService::class.java)

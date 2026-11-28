@@ -24,26 +24,39 @@ function Check([string]$name, [bool]$ok, [string]$detail = '') {
     }
 }
 
+function Read-Json([string]$path, [hashtable]$headers, [string]$method = 'GET', $body = $null) {
+    try {
+        $request = @{ Uri = "$Base$path"; Method = $method; Headers = $headers; TimeoutSec = 20; UseBasicParsing = $true }
+        if ($null -ne $body) { $request['ContentType'] = 'application/json'; $request['Body'] = ($body | ConvertTo-Json -Depth 8 -Compress) }
+        $response = Invoke-WebRequest @request
+        if ([string]::IsNullOrWhiteSpace($response.Content)) { return $null }
+        return ($response.Content | ConvertFrom-Json)
+    } catch {
+        $response = $_.Exception.Response
+        if ($null -eq $response) { return $null }
+        $content = $null
+        try {
+            $stream = $response.GetResponseStream()
+            if ($stream.CanSeek) { $stream.Position = 0 }
+            $content = [IO.StreamReader]::new($stream).ReadToEnd()
+        } catch {
+            try { $content = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult() } catch { return $null }
+        }
+        if ([string]::IsNullOrWhiteSpace($content)) { return $null }
+        return ($content | ConvertFrom-Json)
+    }
+}
+
 function Get-Json([string]$path, [string]$token = '') {
     $headers = @{}
     if ($token) { $headers['Authorization'] = "Bearer $token" }
-    return Invoke-RestMethod -Uri "$Base$path" -Headers $headers -TimeoutSec 20
+    return Read-Json $path $headers
 }
 
 function Post-Json([string]$path, $body, [string]$token = '') {
     $headers = @{ 'Content-Type' = 'application/json' }
     if ($token) { $headers['Authorization'] = "Bearer $token" }
-    $json = $body | ConvertTo-Json -Depth 8 -Compress
-    try {
-        return Invoke-RestMethod -Uri "$Base$path" -Method Post -Headers $headers -Body $json -TimeoutSec 20
-    } catch {
-        $response = $_.Exception.Response
-        if ($response) {
-            $reader = New-Object IO.StreamReader($response.GetResponseStream())
-            return ($reader.ReadToEnd() | ConvertFrom-Json)
-        }
-        return $null
-    }
+    return Read-Json $path $headers 'POST' $body
 }
 
 Write-Host "`nMohammadpur Stock Point — two-client live-sync check against $Base`n"
@@ -52,7 +65,10 @@ Write-Host "`nMohammadpur Stock Point — two-client live-sync check against $Ba
 $sync0 = Get-Json '/api/v1/sync?since=0'
 Check 'first pull succeeds' ($sync0.success -eq $true)
 $rev0 = [int]$sync0.server_rev
-Check 'server exposes a revision' ($rev0 -gt 0) "got $rev0"
+Check 'server exposes a revision' ($rev0 -gt 0)
+Check 'sync exposes pagination cursors' ($null -ne $sync0.truncated -and $null -ne $sync0.next_since)
+$health = Get-Json '/api/v1/health'
+Check 'server speaks contract v3.2.1' ($health.version -eq '3.2.1') "got '$($health.version)'" "got $rev0"
 
 $token = (Post-Json '/api/v1/auth/login' @{ pin = $Pin }).token
 Check 'admin login works' (-not [string]::IsNullOrWhiteSpace($token))
@@ -127,16 +143,45 @@ Check 'replay does not touch stock' ([int]$afterReplay.product.stock_qty -eq $st
 
 # ── Admin change on one client reaches the other ────────────────────────────
 $revBeforeAdjust = [int](Get-Json '/api/v1/sync?since=0' $token).server_rev
+$stockBeforeAdjust = [int](Get-Json "/api/v1/products/$($product.id)").product.stock_qty
 $adjust = Post-Json '/api/v1/stock/adjust' @{ productId = $product.id; delta = 7; reason = 'two-client-check' } $token
 Check 'stock adjust succeeds' ($adjust.success -eq $true)
 $delta2 = Get-Json "/api/v1/sync?since=$revBeforeAdjust" $token
 $changed = @($delta2.products | Where-Object { $_.id -eq $product.id })
 Check 'the adjusted product shows up in the incremental feed' ($changed.Count -eq 1)
-Check 'the feed carries the new stock count' ([int]$changed[0].stock_qty -eq ($stockAfter + 7)) `
-    "got $($changed[0].stock_qty)"
+Check 'the feed carries the new stock count' ([int]$changed[0].stock_qty -eq ($stockBeforeAdjust + 7)) `
+    "got $($changed[0].stock_qty), expected $($stockBeforeAdjust + 7)"
+
+# ── A payment and a return made by one client are visible to the other ──────
+$revBeforeMoney = [int](Get-Json '/api/v1/sync?since=0' $token).server_rev
+$creditOrder = Post-Json '/api/v1/orders' @{
+    client_uuid = [guid]::NewGuid().ToString()
+    customer_name = 'Shared Ledger Customer'
+    customer_phone = '01744444444'
+    payment_method = 'CREDIT'
+    source = 'web'
+    items = @(@{ product_id = $product.id; quantity = 1 })
+} $token
+$creditId = $creditOrder.order.id
+Check 'credit sale accepted across clients' ($creditOrder.success -eq $true)
+$payment = Post-Json "/api/v1/orders/$creditId/payments" @{
+    amount = [double]$creditOrder.order.total_amount; method = 'NAGAD'; reference = 'SYNC-1'
+} $token
+Check 'partial payment settles the credit sale' ($payment.order.payment_status -eq 'PAID')
+$returnOrder = Post-Json "/api/v1/orders/$creditId/returns" @{
+    client_uuid = [guid]::NewGuid().ToString()
+    items = @(@{ product_id = $product.id; quantity = 1 })
+    reason = 'Two-client sync check'
+} $token
+Check 'return is linked to the original order' ([int]$returnOrder.order.original_order_id -eq [int]$creditId)
+$moneyFeed = Get-Json "/api/v1/sync?since=$revBeforeMoney" $token
+$moneyIds = @($moneyFeed.orders | ForEach-Object { $_.id })
+Check 'payment-side writes appear in the shared feed' ($moneyIds -contains [int]$creditId -and $moneyIds -contains [int]$returnOrder.order.id)
+$returnsLedger = Get-Json '/api/v1/returns' $token
+Check 'returns ledger is staff-visible' (@($returnsLedger.returns).Count -ge 1)
 
 # ── A settled client makes no work for itself ──────────────────────────────
-$settled = Get-Json "/api/v1/sync?since=$($delta2.server_rev)" $token
+$settled = Get-Json "/api/v1/sync?since=$($moneyFeed.server_rev)" $token
 Check 'pull from the newest revision returns no new orders' (@($settled.orders).Count -eq 0)
 Check 'pull from the newest revision returns no new products' (@($settled.products).Count -eq 0)
 
