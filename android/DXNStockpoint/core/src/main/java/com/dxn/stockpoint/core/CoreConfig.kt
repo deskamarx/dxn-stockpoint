@@ -48,7 +48,7 @@ data class SyncState(
     val label: String
         get() = when {
             syncing -> "Syncing…"
-            !online && pending > 0 -> "Offline · $pending queued"
+            !online && pending > 0 -> "Offline - $pending queued"
             !online -> "Offline"
             pending > 0 -> "$pending queued"
             lastSyncAt > 0L -> "Live"
