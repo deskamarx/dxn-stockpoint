@@ -1138,3 +1138,78 @@ details > summary::-webkit-details-marker { display: none; }
   .product__foot { flex-direction: column; align-items: stretch; }
   .product__foot .btn, .product__foot .stepper { width: 100%; justify-content: center; }
 }
+
+/* ==========================================================================
+   PV Planner — stock-aware month-end basket builder
+   ========================================================================== */
+
+.pv-layout {
+  display: grid;
+  grid-template-columns: minmax(290px, 340px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.pv-controls { position: sticky; top: 12px; max-height: calc(100vh - 100px); overflow-y: auto; }
+
+.pv-controls__head { margin-bottom: 16px; }
+.pv-controls__head h3 {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -.35px;
+  margin-top: 3px;
+}
+
+.pv-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pv-chips { flex-wrap: wrap; overflow: visible; padding-bottom: 0; }
+.pv-chips .chip { white-space: nowrap; }
+
+.pv-levels { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px; }
+.pv-levels__head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.pv-levels__head span { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+.pv-levels__head small { font-size: 11px; color: var(--faint); }
+.pv-level-row { display: grid; grid-template-columns: minmax(0, 1fr) 88px auto; gap: 6px; margin-bottom: 8px; }
+.pv-level-row .input { padding: 8px 10px; }
+
+.pv-results { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.pv-hero { background: linear-gradient(135deg, var(--primary), var(--primary-2)); color: #fff; border: 0; }
+.pv-hero .eyebrow { color: rgba(255, 255, 255, .68); }
+.pv-hero h3 { font-family: var(--font-display); font-size: clamp(21px, 2.4vw, 28px); font-weight: 700; letter-spacing: -.7px; margin-top: 6px; }
+.pv-hero p { font-size: 13px; color: rgba(255, 255, 255, .78); margin-top: 5px; }
+.pv-progress { height: 9px; border-radius: 99px; background: rgba(255, 255, 255, .22); margin-top: 16px; overflow: hidden; }
+.pv-progress i { display: block; height: 100%; border-radius: 99px; background: var(--accent-2); transition: width .35s var(--ease); }
+
+.pv-message h3 { font-family: var(--font-display); font-size: 17px; font-weight: 700; margin: 10px 0 6px; }
+.pv-message p { font-size: 13px; color: var(--muted); }
+.pv-note { font-size: 12px; color: var(--muted); }
+
+.pv-plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.pv-plan { display: flex; flex-direction: column; gap: 12px; }
+.pv-plan__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.pv-plan__head h3 { font-family: var(--font-display); font-size: 16px; font-weight: 700; }
+.pv-plan__head p { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.pv-plan__head .badge { flex: none; }
+.pv-plan__lines { border-top: 1px solid var(--border); }
+.pv-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.pv-line:last-child { border-bottom: 0; }
+.pv-line span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-line small { display: block; color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+.pv-line strong { flex: none; color: var(--primary-2); font-size: 12.5px; }
+.pv-plan__sum { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; }
+.pv-plan__sum span { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
+.pv-plan__sum strong { display: block; font-family: var(--font-display); font-size: 16px; margin-top: 3px; }
+.pv-plan__actions { display: flex; gap: 8px; margin-top: auto; }
+.pv-plan__actions .btn { flex: 1; justify-content: center; }
+
+@media (max-width: 980px) {
+  .pv-layout { grid-template-columns: 1fr; }
+  .pv-controls { position: static; max-height: none; }
+}
+
+@media (max-width: 520px) {
+  .pv-field-row { grid-template-columns: 1fr; gap: 0; }
+  .pv-plans { grid-template-columns: 1fr; }
+  .pv-plan__head { flex-direction: column; }
+  .pv-level-row { grid-template-columns: minmax(0, 1fr) 74px auto; }
+}

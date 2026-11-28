@@ -68,7 +68,7 @@ $rev0 = [int]$sync0.server_rev
 Check 'server exposes a revision' ($rev0 -gt 0)
 Check 'sync exposes pagination cursors' ($null -ne $sync0.truncated -and $null -ne $sync0.next_since)
 $health = Get-Json '/api/v1/health'
-Check 'server speaks contract v3.2.1' ($health.version -eq '3.2.1') "got '$($health.version)'" "got $rev0"
+Check 'server speaks contract v3.3.0' ($health.version -eq '3.3.0') "got '$($health.version)'" "got $rev0"
 
 $token = (Post-Json '/api/v1/auth/login' @{ pin = $Pin }).token
 Check 'admin login works' (-not [string]::IsNullOrWhiteSpace($token))

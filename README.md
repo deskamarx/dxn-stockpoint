@@ -150,6 +150,11 @@ Flow and Intelligence embed the same live app (`./index.html#/orders`,
 revision feed. The PV Planner falls back to a bundled catalogue only when the
 API is unreachable.
 
+The planner is also a first-class Stockpoint route (`./index.html#/pv`, or
+`Ctrl+4` in the app), with the same synced catalogue, filters, saved levels and
+add-to-cart handoff. It is precached by the service worker and bundled in the
+offline WebView APKs.
+
 ## Android apps
 
 All apps live in one Gradle project and share `:core`. The suite app is a
@@ -170,7 +175,7 @@ cd android/DXNStockpoint
 ./scripts/build-apps.sh --release --api-url https://shop.example.com/ --aab
 ./scripts/build-apps.sh --debug --client-only
 ./scripts/build-apps.sh --release --suite-only
-./scripts/bump-version.sh 3.2.1             # versionCode + versionName
+./scripts/bump-version.sh 3.3.0             # versionCode + versionName
 ```
 
 Release builds refuse the `shop.example.com` placeholder unless

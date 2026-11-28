@@ -8,7 +8,7 @@
 #   ./scripts/build-apps.sh --release --suite-only
 #   ./scripts/build-apps.sh --release \
 #       --api-url https://api.example.com/ \
-#       --version-code 14 --version-name 3.2.1
+#       --version-code 15 --version-name 3.3.0
 #
 # Signing credentials are read from the environment. If they are not set, the
 # script sources (in order):

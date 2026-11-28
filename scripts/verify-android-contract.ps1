@@ -61,16 +61,16 @@ function Post-Json([string]$path, $body, [string]$token = '', [string]$method = 
     return Read-Json $path $headers $method $body
 }
 
-Write-Host "`nMohammadpur Stock Point — Android v3.2.1 contract check against $Base`n"
+Write-Host "`nMohammadpur Stock Point — Android v3.3.0 contract check against $Base`n"
 
 # ── 1. Health and service metadata ───────────────────────────────────────────
 $health = Get-Json '/api/v1/health'
 Check 'health returns success' ($health.status -eq 'ok')
-Check 'health reports version 3.2.1' ($health.version -eq '3.2.1') "got '$($health.version)'"
+Check 'health reports version 3.3.0' ($health.version -eq '3.3.0') "got '$($health.version)'"
 Check 'health exposes server_rev' ($null -ne $health.server_rev)
 Check 'health exposes database counts' ($null -ne $health.database.counts.payments)
 $root = Get-Json '/api/v1'
-Check 'API root reports version 3.2.1' ($root.version -eq '3.2.1')
+Check 'API root reports version 3.3.0' ($root.version -eq '3.3.0')
 Check 'API root advertises payment routes' ($root.endpoints -contains '/payments' -and $root.endpoints -contains '/returns')
 
 # ── 2. Public sync (anonymous catalogue pull) ────────────────────────────────

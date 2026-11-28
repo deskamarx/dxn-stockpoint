@@ -12,6 +12,7 @@ import { renderOrders } from './views/orders.js';
 import { renderInventory } from './views/inventory.js';
 import { renderCustomers } from './views/customers.js';
 import { renderReports } from './views/reports.js';
+import { renderPv } from './views/pv.js';
 import { renderSettings } from './views/settings.js';
 import { openCart, closeCart, isCartOpen, renderCartDrawer, openHeldSales } from './views/cart.js';
 import { renderAccount, renderTrack, openCustomerAuth } from './views/account.js';
@@ -24,6 +25,7 @@ const ROUTES = {
   inventory: { render: renderInventory, title: 'Inventory', kicker: 'Manage' },
   customers: { render: renderCustomers, title: 'Customers', kicker: 'Manage' },
   reports: { render: renderReports, title: 'Reports', kicker: 'Insights' },
+  pv: { render: renderPv, title: 'PV Planner', kicker: 'Plan' },
   settings: { render: renderSettings, title: 'Settings', kicker: 'System' },
   account: { render: renderAccount, title: 'My account', kicker: 'Customer' },
   track: { render: renderTrack, title: 'Track order', kicker: 'Customer' },
@@ -160,6 +162,7 @@ function render({ force = false } = {}) {
     store.state.tier,
     store.state.theme,
     store.state.products.length,
+    store.state.rev,
     store.state.orders.length,
     store.state.customers.length,
     store.state.outbox.length,
@@ -401,7 +404,7 @@ function openSearch() {
           ['Dashboard', '#/dashboard', 'home'], ['Point of sale', '#/pos', 'store'],
           ['Orders', '#/orders', 'receipt'], ['Inventory', '#/inventory', 'box'],
           ['Customers', '#/customers', 'users'], ['Reports', '#/reports', 'chart'],
-          ['Settings', '#/settings', 'settings'],
+          ['PV Planner', '#/pv', 'sparkles'], ['Settings', '#/settings', 'settings'],
         ].filter(([name]) => name.toLowerCase().includes(q));
 
         const products = store.activeProducts()
@@ -489,10 +492,11 @@ function openHelp() {
       <div class="list">
         <div class="list__row"><div class="list__main"><div class="list__title">Start selling</div><div class="list__sub">Open Point of sale, tap Add on any product, then save the sale. Works offline.</div></div></div>
         <div class="list__row"><div class="list__main"><div class="list__title">Hold a sale</div><div class="list__sub">Use Hold in the cart to park a sale and free the till for the next customer.</div></div></div>
+        <div class="list__row"><div class="list__main"><div class="list__title">Plan a PV upgrade</div><div class="list__sub">Open PV Planner from the Manage menu. It uses live stock and prices, and can replace the cart with one tap.</div></div></div>
         <div class="list__row"><div class="list__main"><div class="list__title">Member pricing</div><div class="list__sub">Toggle Member pricing in the POS for DXN members — PV follows the sale.</div></div></div>
         <div class="list__row"><div class="list__main"><div class="list__title">Stock</div><div class="list__sub">Adjust stock from Inventory; every delivery, sale and count is logged.</div></div></div>
         <div class="list__row"><div class="list__main"><div class="list__title">Sync</div><div class="list__sub">Connect your shop server in Settings. Web and Android share one API.</div></div></div>
-        <div class="list__row"><div class="list__main"><div class="list__title">Shortcuts</div><div class="list__sub"><kbd>Ctrl</kbd>+<kbd>K</kbd> search · <kbd>F2</kbd> sell · <kbd>Esc</kbd> close · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> dark mode</div></div></div>
+        <div class="list__row"><div class="list__main"><div class="list__title">Shortcuts</div><div class="list__sub"><kbd>Ctrl</kbd>+<kbd>K</kbd> search · <kbd>F2</kbd> sell · <kbd>Ctrl</kbd>+<kbd>4</kbd> PV planner · <kbd>Esc</kbd> close · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> dark mode</div></div></div>
       </div>
     `,
     footer: `<button class="btn btn--primary" type="button" data-close>Got it</button>`,
@@ -581,6 +585,11 @@ function wireChrome() {
     if (event.key === 'F2') {
       event.preventDefault();
       location.hash = '#/pos';
+      return;
+    }
+    if (((event.ctrlKey || event.metaKey) && event.key === '4') || (event.altKey && event.key === '4')) {
+      event.preventDefault();
+      location.hash = '#/pv';
       return;
     }
     if (event.key === 'Escape') {

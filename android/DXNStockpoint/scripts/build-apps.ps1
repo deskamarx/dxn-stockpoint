@@ -7,7 +7,7 @@ Builds the owner, customer and suite Android apps.
 .\scripts\build-apps.ps1 -Variant release -Aab
 .\scripts\build-apps.ps1 -Variant debug -ClientOnly
 .\scripts\build-apps.ps1 -Variant release -SuiteOnly
-.\scripts\build-apps.ps1 -Variant release -ApiUrl https://api.example.com/ -VersionCode 14 -VersionName 3.2.1
+.\scripts\build-apps.ps1 -Variant release -ApiUrl https://api.example.com/ -VersionCode 15 -VersionName 3.3.0
 
 Signing credentials are read from the environment, or from
 .tooling\keystore.env / .tooling\client-keystore.env / .tooling\suite-keystore.env

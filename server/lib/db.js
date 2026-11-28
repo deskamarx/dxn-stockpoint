@@ -29,7 +29,7 @@ import {
 /** Storage schema version. Bump only with an additive, replayable migration. */
 const VERSION = 4;
 /** Contract version reported to clients; matches the web/app release train. */
-const APP_VERSION = '3.2.1';
+const APP_VERSION = '3.3.0';
 
 const DEFAULT_SETTINGS = {
   branch_name: 'Mohammadpur Stock Point',

@@ -5,7 +5,7 @@
  * responses (different origin) so sync always talks to the real server.
  */
 
-const VERSION = 'dxn-stockpoint-3.2.1-r1';
+const VERSION = 'dxn-stockpoint-3.3.0-r1';
 const SHELL = [
   './',
   './index.html',
@@ -24,6 +24,7 @@ const SHELL = [
   './js/crypto.js',
   './js/pdf.js',
   './js/xlsx.js',
+  './js/pv.js',
   './js/receipt.js',
   './js/views/checkout.js',
   './js/views/dashboard.js',
@@ -33,6 +34,7 @@ const SHELL = [
   './js/views/inventory.js',
   './js/views/customers.js',
   './js/views/reports.js',
+  './js/views/pv.js',
   './js/views/settings.js',
   './js/views/product-form.js',
   './icons/icon.svg',

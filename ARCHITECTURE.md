@@ -1,4 +1,4 @@
-# Architecture and scope (v3.2.1)
+# Architecture and scope (v3.3.0)
 
 This document records the implementation choices that differ from the original
 wish list, and exactly what is and is not covered by the shipped build.
@@ -45,7 +45,7 @@ Capacitor builds — they are not.
 
 `api/` (PHP 8 + MySQL) is retained for shared hosting and implements the
 original v1 contract: catalogue, customers, orders, courier and basic sync.
-The following v3.2.1 endpoints are **Node-only**:
+The following v3.3.0 endpoints are **Node-only**:
 
 - `POST /api/v1/orders/:id/payments`, `POST /api/v1/orders/:id/returns`
 - `GET /api/v1/orders/:id/timeline`, `GET /api/v1/orders/:id/receipt`
@@ -63,9 +63,9 @@ credentials were supplied.
 
 Verified in this workspace:
 
-- `npm run check` and `npm test` — 32 tests, including migration/rollback,
-  split payments, returns, RBAC, audit attribution, sync scopes and encrypted
-  backups.
+- `npm run check` and `npm test` — 38 tests, including six PV planner maths
+  tests checked against brute-force optima, plus migration/rollback, split
+  payments, returns, RBAC, audit attribution, sync scopes and encrypted backups.
 - `:core:testDebugUnitTest` — JVM contract tests for URL normalisation,
   paginated sync parsing and numeric/boolean `is_active` products.
 - All five release APKs pass `lintVitalRelease`, R8 and `apksigner verify`, and
@@ -74,10 +74,16 @@ Verified in this workspace:
   rehearsals (15 checks each), including row preservation and rollback.
 - `scripts/verify-android-contract.ps1` (83 checks) and
   `scripts/verify-two-client-sync.ps1` (29 checks) — live API contract and
-  cross-client sync checks against a local v3.2.1 server.
+  cross-client sync checks against a local v3.3.0 server.
 - Emulator functional QA: online catalog after the `is_active` parser fix,
   offline sale queued in SQLite, outbox replay with a stable `client_uuid`,
   snapshot save/restore, conflict resolution and the owner PIN gate.
+
+The PV Planner is a first-class Stockpoint route (`#/pv`) and is also bundled
+in both offline WebView shells. It uses the shared `store`, so it reads the same
+catalogue/revision as the POS and hands plans back with `store.addToCart()`;
+no new API endpoint or paid service is required. The legacy Suite workspace
+remains available at `#pv`.
 
 Split payments, returns, RBAC/audit and encrypted backup round-trips are
 verified through the Node suites and live API/PWA flows; the native Compose

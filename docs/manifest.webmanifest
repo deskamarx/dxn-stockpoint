@@ -56,6 +56,12 @@
       "short_name": "Reports",
       "url": "./#/reports",
       "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "PV Planner",
+      "short_name": "PV",
+      "url": "./#/pv",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
     }
   ]
 }
